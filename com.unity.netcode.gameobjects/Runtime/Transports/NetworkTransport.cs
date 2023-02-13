@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using Cysharp.Threading.Tasks;
 using UnityEngine;
 
 namespace Unity.Netcode
@@ -19,6 +21,13 @@ namespace Unity.Netcode
         public virtual bool IsSupported => true;
 
         internal INetworkMetrics NetworkMetrics;
+
+        // KEEPSAKE FIX
+        public abstract void GetPipelineStats(ref List<PipelineStats> stats);
+        public abstract void GetDriverStats(ref DriverStats stats);
+        public abstract void SetLatencyTraceId(int latencyTraceId);
+        public abstract void ProcessLatencyTrace();
+        // END KEEPSAKE FIX
 
         /// <summary>
         /// Delegate for transport network events
@@ -75,7 +84,8 @@ namespace Unity.Netcode
         /// Disconnects a client from the server
         /// </summary>
         /// <param name="clientId">The clientId to disconnect</param>
-        public abstract void DisconnectRemoteClient(ulong clientId);
+        /// <param name="graceful">KEEPSAKE FIX</param>
+        public abstract void DisconnectRemoteClient(ulong clientId, bool graceful = true);
 
         /// <summary>
         /// Disconnects the local client from the server
@@ -89,6 +99,12 @@ namespace Unity.Netcode
         /// <returns>Returns the round trip time in milliseconds </returns>
         public abstract ulong GetCurrentRtt(ulong clientId);
 
+        // KEEPSAKE FIX
+        public virtual async UniTask PrepareGracefulShutdownAsync()
+        {
+            await UniTask.CompletedTask;
+        }
+
         /// <summary>
         /// Shuts down the transport
         /// </summary>
@@ -99,4 +115,52 @@ namespace Unity.Netcode
         /// </summary>
         public abstract void Initialize();
     }
+
+    // KEEPSAKE FIX
+    public struct PipelineStats
+    {
+        public const int SendQueueSize = 32; // keep in sync with ReliableUtility
+
+        public bool Reliable;
+        public bool Sequenced;
+
+        public              int   TotalOutboundPacketsEntered;
+        public              int   TotalOutboundPacketsExited;
+        public              int   TotalOutboundPacketsExitedResend; // for reliable pipes
+        public unsafe fixed ulong OutboundPacketsEntered[128];      // see StatsUtilities.MaxPacketsTrackedPerFlush
+        public              int   OutboundPacketsEnteredCount;
+        public unsafe fixed ulong OutboundPacketsExited[128];
+        public              int   OutboundPacketsExitedCount;
+        public unsafe fixed ulong OutboundPacketsExitedResend[128];       // for reliable pipes
+        public              int   OutboundPacketsExitedResendCount;       // for reliable pipes
+        public              bool  OutboundPacketsRejectedQueueFull;       // for reliable pipes
+        public unsafe fixed int   OutboundPacketSendQueue[SendQueueSize]; // for reliable pipes
+
+        public              int   TotalInboundPacketsEntered;
+        public              int   TotalInboundPacketsExited;
+        public unsafe fixed ulong InboundPacketsEntered[128];
+        public              int   InboundPacketsEnteredCount;
+        public              int   InboundPacketAcksCount;
+        public unsafe fixed ulong InboundPacketsExited[128];
+        public              int   InboundPacketsExitedCount;
+    }
+
+    public struct SendQueueStats
+    {
+        public string Name;
+        public int    Length;
+        public int    Consumed;
+        public int    Added;
+        public int    SendSuccess;
+        public int    SendError;
+    }
+
+    public struct DriverStats
+    {
+        public int SentPackets;
+        public int ReceivedPackets;
+
+        public SendQueueStats[] SendQueues;
+    }
+    // END KEEPSAKE FIX
 }

@@ -7,11 +7,7 @@ namespace Unity.Netcode
     {
         private HashSet<NetworkObject> m_Touched = new HashSet<NetworkObject>();
 
-        // reused each call to NetworkBehaviourUpdate to avoid GC.
-        //  should investigate using a native container
-        private HashSet<NetworkObject> m_InterestUpdateThisFrame = new HashSet<NetworkObject>();
-
-#if DEVELOPMENT_BUILD || UNITY_EDITOR
+        #if DEVELOPMENT_BUILD || UNITY_EDITOR
         private ProfilerMarker m_NetworkBehaviourUpdate = new ProfilerMarker($"{nameof(NetworkBehaviour)}.{nameof(NetworkBehaviourUpdate)}");
 #endif
 
@@ -25,21 +21,27 @@ namespace Unity.Netcode
                 if (networkManager.IsServer)
                 {
                     m_Touched.Clear();
+                    var numClientsQueriedFor = 0;
                     for (int i = 0; i < networkManager.ConnectedClientsList.Count; i++)
                     {
                         var client = networkManager.ConnectedClientsList[i];
+                        if (client.PlayerObject == null) // KEEPSAKE FIX
+                        {
+                            continue;
+                        }
 
-                        m_InterestUpdateThisFrame.Clear();
-                        networkManager.InterestManager.QueryFor(ref client.PlayerObject, ref m_InterestUpdateThisFrame);
-                        foreach (var sobj in m_InterestUpdateThisFrame)
+                        networkManager.InterestManager.QueryFor(ref client.PlayerObject, out var interestUpdateThisFrame);
+                        numClientsQueriedFor++;
+                        foreach (var sobj in interestUpdateThisFrame)
                         {
                             if (sobj.IsNetworkVisibleTo(client.ClientId))
                             {
                                 m_Touched.Add(sobj);
                                 // Sync just the variables for just the objects this client sees
-                                for (int k = 0; k < sobj.ChildNetworkBehaviours.Count; k++)
+                                var behaviours = sobj.ChildNetworkBehaviours_BehavioursOnly;
+                                foreach (var networkBehaviour in behaviours)
                                 {
-                                    sobj.ChildNetworkBehaviours[k].VariableUpdate(client.ClientId);
+                                    networkBehaviour.VariableUpdate(client.ClientId);
                                 }
                             }
                         }
@@ -48,32 +50,40 @@ namespace Unity.Netcode
                     // Now, reset all the no-longer-dirty variables
                     foreach (var sobj in m_Touched)
                     {
-                        for (int k = 0; k < sobj.ChildNetworkBehaviours.Count; k++)
+                        foreach (var networkBehaviour in sobj.ChildNetworkBehaviours_BehavioursOnly)
                         {
-                            sobj.ChildNetworkBehaviours[k].PostNetworkVariableWrite();
+                            networkBehaviour.PostNetworkVariableWrite();
                         }
+                    }
+
+                    // KEEPSAKE FIX - clear dirty flag when all known clients have checked their interest
+                    if (numClientsQueriedFor == networkManager.ConnectedClientsList.Count)
+                    {
+                        networkManager.InterestManager.ClearInterestDirty();
                     }
                 }
                 else
                 {
                     // when client updates the server, it tells it about all its objects
-                    foreach (var sobj in networkManager.SpawnManager.SpawnedObjectsList)
+                    // KEEPSAKE FIX - find objects in Attached instead of Spawned collection
+                    foreach (var sobj in networkManager.SpawnManager.AttachedObjectsList)
                     {
                         if (sobj.IsOwner)
                         {
-                            for (int k = 0; k < sobj.ChildNetworkBehaviours.Count; k++)
+                            foreach (var networkBehaviour in sobj.ChildNetworkBehaviours_BehavioursOnly)
                             {
-                                sobj.ChildNetworkBehaviours[k].VariableUpdate(networkManager.ServerClientId);
+                                networkBehaviour.VariableUpdate(networkManager.ServerClientId);
                             }
                         }
                     }
 
                     // Now, reset all the no-longer-dirty variables
-                    foreach (var sobj in networkManager.SpawnManager.SpawnedObjectsList)
+                    // KEEPSAKE FIX - find objects in Attached instead of Spawned collection
+                    foreach (var sobj in networkManager.SpawnManager.AttachedObjectsList)
                     {
-                        for (int k = 0; k < sobj.ChildNetworkBehaviours.Count; k++)
+                        foreach (var networkBehaviour in sobj.ChildNetworkBehaviours_BehavioursOnly)
                         {
-                            sobj.ChildNetworkBehaviours[k].PostNetworkVariableWrite();
+                            networkBehaviour.PostNetworkVariableWrite();
                         }
                     }
                 }

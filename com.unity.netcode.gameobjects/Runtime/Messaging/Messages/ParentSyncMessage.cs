@@ -46,7 +46,8 @@ namespace Unity.Netcode
                 }
             }
 
-            if (!networkManager.SpawnManager.SpawnedObjects.ContainsKey(NetworkObjectId))
+            // KEEPSAKE FIX - find objects in Attached instead of Spawned collection
+            if (!networkManager.SpawnManager.AttachedObjects.ContainsKey(NetworkObjectId))
             {
                 networkManager.SpawnManager.TriggerOnSpawn(NetworkObjectId, reader, ref context);
                 return false;
@@ -58,7 +59,8 @@ namespace Unity.Netcode
         public void Handle(ref NetworkContext context)
         {
             var networkManager = (NetworkManager)context.SystemOwner;
-            var networkObject = networkManager.SpawnManager.SpawnedObjects[NetworkObjectId];
+            // KEEPSAKE FIX - find objects in Attached instead of Spawned collection
+            var networkObject = networkManager.SpawnManager.AttachedObjects[NetworkObjectId];
             networkObject.SetNetworkParenting(IsReparented, LatestParent);
             networkObject.ApplyNetworkParenting();
         }

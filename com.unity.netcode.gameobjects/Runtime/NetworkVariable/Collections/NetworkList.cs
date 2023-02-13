@@ -24,6 +24,9 @@ namespace Unity.Netcode
         /// </summary>
         public event OnListChangedDelegate OnListChanged;
 
+        // KEEPSAKE FIX - to avoid checking Length in hot path
+        private bool m_HasDirtyEvents;
+
         /// <summary>
         /// Creates a NetworkList with the default value and settings
         /// </summary>
@@ -60,13 +63,15 @@ namespace Unity.Netcode
         {
             base.ResetDirty();
             m_DirtyEvents.Clear();
+            m_HasDirtyEvents = false;
+            m_IsDirtySubject.OnNext(IsDirty());
         }
 
         /// <inheritdoc />
         public override bool IsDirty()
         {
             // we call the base class to allow the SetDirty() mechanism to work
-            return base.IsDirty() || m_DirtyEvents.Length > 0;
+            return m_HasDirtyEvents || base.IsDirty();
         }
 
         /// <inheritdoc />
@@ -128,9 +133,9 @@ namespace Unity.Netcode
         public override void WriteField(FastBufferWriter writer)
         {
             writer.WriteValueSafe((ushort)m_List.Length);
-            for (int i = 0; i < m_List.Length; i++)
+            foreach (var e in m_List)
             {
-                writer.WriteValueSafe(m_List[i]);
+                writer.WriteValueSafe(e);
             }
         }
 
@@ -139,11 +144,17 @@ namespace Unity.Netcode
         {
             m_List.Clear();
             reader.ReadValueSafe(out ushort count);
-            for (int i = 0; i < count; i++)
+            for (var i = 0; i < count; i++)
             {
                 reader.ReadValueSafe(out T value);
                 m_List.Add(value);
             }
+
+            // KEEPSAKE FIX - invoke changed event on full reads (why not Unity??)
+            OnListChanged?.Invoke(new NetworkListEvent<T>
+            {
+                Type = NetworkListEvent<T>.EventType.Full,
+            });
         }
 
         /// <inheritdoc />
@@ -178,6 +189,8 @@ namespace Unity.Netcode
                                     Index = m_List.Length - 1,
                                     Value = m_List[m_List.Length - 1]
                                 });
+                                m_HasDirtyEvents = true;
+                                m_IsDirtySubject.OnNext(IsDirty());
                             }
                         }
                         break;
@@ -206,6 +219,8 @@ namespace Unity.Netcode
                                     Index = index,
                                     Value = m_List[index]
                                 });
+                                m_HasDirtyEvents = true;
+                                m_IsDirtySubject.OnNext(IsDirty());
                             }
                         }
                         break;
@@ -238,6 +253,8 @@ namespace Unity.Netcode
                                     Index = index,
                                     Value = value
                                 });
+                                m_HasDirtyEvents = true;
+                                m_IsDirtySubject.OnNext(IsDirty());
                             }
                         }
                         break;
@@ -265,6 +282,8 @@ namespace Unity.Netcode
                                     Index = index,
                                     Value = value
                                 });
+                                m_HasDirtyEvents = true;
+                                m_IsDirtySubject.OnNext(IsDirty());
                             }
                         }
                         break;
@@ -300,6 +319,8 @@ namespace Unity.Netcode
                                     Value = value,
                                     PreviousValue = previousValue
                                 });
+                                m_HasDirtyEvents = true;
+                                m_IsDirtySubject.OnNext(IsDirty());
                             }
                         }
                         break;
@@ -322,6 +343,8 @@ namespace Unity.Netcode
                                 {
                                     Type = eventType
                                 });
+                                m_HasDirtyEvents = true;
+                                m_IsDirtySubject.OnNext(IsDirty());
                             }
                         }
                         break;
@@ -457,6 +480,8 @@ namespace Unity.Netcode
         private void HandleAddListEvent(NetworkListEvent<T> listEvent)
         {
             m_DirtyEvents.Add(listEvent);
+            m_HasDirtyEvents = true;
+            m_IsDirtySubject.OnNext(IsDirty());
             OnListChanged?.Invoke(listEvent);
         }
 
@@ -471,8 +496,17 @@ namespace Unity.Netcode
 
         public override void Dispose()
         {
-            m_List.Dispose();
-            m_DirtyEvents.Dispose();
+            if (m_List.IsCreated)
+            {
+                m_List.Dispose();
+            }
+
+            if (m_DirtyEvents.IsCreated)
+            {
+                m_DirtyEvents.Dispose();
+            }
+
+            base.Dispose();
         }
     }
 

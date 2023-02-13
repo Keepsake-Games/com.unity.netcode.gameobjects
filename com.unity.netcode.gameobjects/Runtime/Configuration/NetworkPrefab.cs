@@ -3,7 +3,8 @@ using UnityEngine;
 
 namespace Unity.Netcode
 {
-    internal enum NetworkPrefabOverride
+    // KEEPSAKE FIX - made public
+    public enum NetworkPrefabOverride
     {
         None,
         Prefab,
@@ -13,8 +14,9 @@ namespace Unity.Netcode
     /// <summary>
     /// Class that represents a NetworkPrefab
     /// </summary>
+    // KEEPSAKE FIX - made public
     [Serializable]
-    internal class NetworkPrefab
+    public class NetworkPrefab
     {
         /// <summary>
         /// The override setttings for this NetworkPrefab
@@ -41,5 +43,9 @@ namespace Unity.Netcode
         /// The prefab to replace (override) the source prefab with
         /// </summary>
         public GameObject OverridingTargetPrefab;
+
+
+        // KEEPSAKE FIX - support NetworkPrefabs being addressables
+        public string AddressableKey;
     }
 }

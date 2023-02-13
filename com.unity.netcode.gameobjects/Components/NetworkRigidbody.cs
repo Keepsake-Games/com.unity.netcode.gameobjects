@@ -60,7 +60,8 @@ namespace Unity.Netcode.Components
         }
 
         /// <inheritdoc />
-        public override void OnNetworkSpawn()
+        // KEEPSAKE FIX - hooked to OnNetworkAttach instead of OnNetworkSpawn
+        public override void OnNetworkAttach()
         {
             m_IsAuthority = HasAuthority;
             m_OriginalKinematic = m_Rigidbody.isKinematic;

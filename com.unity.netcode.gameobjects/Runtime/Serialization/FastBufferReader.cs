@@ -195,7 +195,11 @@ namespace Unity.Netcode
         /// </summary>
         public unsafe void Dispose()
         {
-            UnsafeUtility.Free(Handle, Handle->Allocator);
+            // KEEPSAKE FIX - don't free when Allocator is None
+            if (UnsafeUtility.IsValidAllocator(Handle->Allocator))
+            {
+                UnsafeUtility.Free(Handle, Handle->Allocator);
+            }
         }
 
         /// <summary>

@@ -7,7 +7,8 @@ namespace Unity.Netcode
     /// collecting profiling data and metrics data. Additionally, it provides OnVerifyCanSend and OnVerifyCanReceive
     /// to allow for networking implementations to put limits on when certain messages can or can't be sent or received.
     /// </summary>
-    internal interface INetworkHooks
+    // KEEPSAKE FIX - made public because MessagingSystem was made public
+    public interface INetworkHooks
     {
         /// <summary>
         /// Called before an individual message is sent.

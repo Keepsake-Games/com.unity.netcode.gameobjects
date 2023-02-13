@@ -257,9 +257,11 @@ namespace Unity.Netcode
         /// <returns></returns>
         internal NetworkObject HandleNetworkPrefabSpawn(uint networkPrefabAssetHash, ulong ownerClientId, Vector3 position, Quaternion rotation)
         {
-            if (m_PrefabAssetToPrefabHandler.ContainsKey(networkPrefabAssetHash))
+            // KEEPSAKE FIX - search only one using TryGetValue
+            if (m_PrefabAssetToPrefabHandler.TryGetValue(networkPrefabAssetHash, out var handler))
+            //if (m_PrefabAssetToPrefabHandler.ContainsKey(networkPrefabAssetHash))
             {
-                var networkObjectInstance = m_PrefabAssetToPrefabHandler[networkPrefabAssetHash].Instantiate(ownerClientId, position, rotation);
+                var networkObjectInstance = handler.Instantiate(ownerClientId, position, rotation);
 
                 //Now we must make sure this alternate PrefabAsset spawned in place of the prefab asset with the networkPrefabAssetHash (GlobalObjectIdHash)
                 //is registered and linked to the networkPrefabAssetHash so during the HandleNetworkPrefabDestroy process we can identify the alternate prefab asset.

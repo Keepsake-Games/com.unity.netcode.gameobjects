@@ -137,7 +137,8 @@ namespace Unity.Netcode.Components
         {
             get
             {
-                return IsServer && NetworkObject.IsSpawned;
+                // KEEPSAKE FIX - check IsAttached and not IsSpawned
+                return IsServer && NetworkObject.IsAttached;
             }
         }
 
@@ -151,7 +152,8 @@ namespace Unity.Netcode.Components
             m_ParameterWriter.Dispose();
         }
 
-        public override void OnNetworkSpawn()
+        // KEEPSAKE FIX - hooked to OnNetworkAttach instead of OnNetworkSpawn
+        public override void OnNetworkAttach()
         {
             var parameters = m_Animator.parameters;
             m_CachedAnimatorParameters = new NativeArray<AnimatorParamCache>(parameters.Length, Allocator.Persistent);

@@ -14,9 +14,10 @@ namespace Unity.Netcode
         public static LogLevel CurrentLogLevel => NetworkManager.Singleton == null ? LogLevel.Normal : NetworkManager.Singleton.LogLevel;
 
         // internal logging
-        internal static void LogInfo(string message) => Debug.Log($"[Netcode] {message}");
-        internal static void LogWarning(string message) => Debug.LogWarning($"[Netcode] {message}");
-        internal static void LogError(string message) => Debug.LogError($"[Netcode] {message}");
+        // KEEPSAKE FIX - our logging
+        internal static void LogInfo(string message) => LogNetcode.Info($"{message}");
+        internal static void LogWarning(string message) => LogNetcode.Warning($"{message}");
+        internal static void LogError(string message) => LogNetcode.Error($"{message}");
 
         /// <summary>
         /// Logs an info log locally and on the server if possible.

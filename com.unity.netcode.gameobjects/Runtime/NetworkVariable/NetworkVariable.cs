@@ -119,11 +119,18 @@ namespace Unity.Netcode
                 // this could be improved. The Networking Manager is not always initialized here
                 //  Good place to decouple network manager from the network variable
 
+                // KEEPSAKE FIX - seen as null when stopping play in editor
+                if (m_NetworkBehaviour && m_NetworkBehaviour.NetworkManager == null)
+                {
+                    return;
+                }
+
                 // Also, note this is not really very water-tight, if you are running as a host
                 //  we cannot tell if a NetworkVariable write is happening inside client-ish code
-                if (m_NetworkBehaviour && (m_NetworkBehaviour.NetworkManager.IsClient && !m_NetworkBehaviour.NetworkManager.IsHost))
+                // KEEPSAKE FIX - allow clients to write if they own the NO
+                if (m_NetworkBehaviour && !m_NetworkBehaviour.IsOwner && !m_NetworkBehaviour.NetworkManager.IsServer)
                 {
-                    throw new InvalidOperationException("Client can't write to NetworkVariables");
+                    throw new InvalidOperationException("Non-owning clients can't write to NetworkVariables");
                 }
                 Set(value);
             }
@@ -135,6 +142,9 @@ namespace Unity.Netcode
             T previousValue = m_InternalValue;
             m_InternalValue = value;
             OnValueChanged?.Invoke(previousValue, m_InternalValue);
+
+            // KEEPSAKE FIX - observable IsDirty (important to use IsDirty(), not m_IsDirty, to respect subclass impl)
+            m_IsDirtySubject.OnNext(IsDirty());
         }
 
         /// <summary>
@@ -160,6 +170,9 @@ namespace Unity.Netcode
             if (keepDirtyDelta)
             {
                 m_IsDirty = true;
+
+                // KEEPSAKE FIX - observable IsDirty (important to use IsDirty(), not m_IsDirty, to respect subclass impl)
+                m_IsDirtySubject.OnNext(IsDirty());
             }
 
             OnValueChanged?.Invoke(previousValue, m_InternalValue);
@@ -168,7 +181,11 @@ namespace Unity.Netcode
         /// <inheritdoc />
         public override void ReadField(FastBufferReader reader)
         {
+            T previousValue = m_InternalValue;
             Read(reader, out m_InternalValue);
+
+            // KEEPSAKE FIX - invoke value changed callback for full reads
+            OnValueChanged?.Invoke(previousValue, m_InternalValue);
         }
 
         /// <inheritdoc />

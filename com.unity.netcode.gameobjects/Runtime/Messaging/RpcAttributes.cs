@@ -40,6 +40,12 @@ namespace Unity.Netcode
         /// Whether or not the ServerRpc should only be run if executed by the owner of the object
         /// </summary>
         public bool RequireOwnership = true;
+
+        // KEEPSAKE FIX
+        /// <summary>
+        /// Whether or not the ServerRpc will also be executed locally when sent to server
+        /// </summary>
+        public bool WithLocalPrediction = true;
     }
 
     /// <summary>

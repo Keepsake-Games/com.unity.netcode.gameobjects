@@ -13,7 +13,8 @@ namespace Unity.Netcode
     /// <summary>
     /// XXHash implementation.
     /// </summary>
-    internal static class XXHash
+    // KEEPSAKE FIX - made public
+    public static class XXHash
     {
         private const ulong k_Prime64v1 = 11400714785074694791ul;
         private const ulong k_Prime64v2 = 14029467366897019727ul;

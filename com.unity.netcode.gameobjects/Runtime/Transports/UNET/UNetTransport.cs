@@ -1,6 +1,7 @@
 #pragma warning disable 618 // disable is obsolete
 #pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -40,6 +41,25 @@ namespace Unity.Netcode.Transports.UNET
         private int m_ServerHostId;
 
         public override ulong ServerClientId => GetNetcodeClientId(0, 0, true);
+        public override void GetPipelineStats(ref List<PipelineStats> stats)
+        {
+            // KEEPSAKE FIX - NYI
+        }
+
+        public override void GetDriverStats(ref DriverStats stats)
+        {
+            // KEEPSAKE FIX - NYI
+        }
+
+        public override void SetLatencyTraceId(int latencyTraceId)
+        {
+            // KEEPSAKE FIX - NYI
+        }
+
+        public override void ProcessLatencyTrace()
+        {
+            // KEEPSAKE FIX - NYI
+        }
 
         protected void LateUpdate()
         {
@@ -206,7 +226,7 @@ namespace Unity.Netcode.Transports.UNET
             return true;
         }
 
-        public override void DisconnectRemoteClient(ulong clientId)
+        public override void DisconnectRemoteClient(ulong clientId, bool graceful = true)
         {
             GetUNetConnectionDetails(clientId, out byte hostId, out ushort connectionId);
 

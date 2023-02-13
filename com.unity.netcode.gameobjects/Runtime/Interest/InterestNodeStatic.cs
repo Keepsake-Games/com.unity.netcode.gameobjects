@@ -21,6 +21,9 @@ namespace Unity.Netcode.Interest
         //  they are then reduced
         private List<HashSet<TObject>> m_ResultSets;
 
+        // KEEPSAKE FIX - support marking an objects interest as dirty to not recompute for all every tick
+        private readonly HashSet<TObject> m_DirtyObjects = new();
+
         public InterestNodeStatic()
         {
             m_InterestKernels = new List<Tuple<bool, IInterestKernel<TObject>>>();
@@ -31,11 +34,21 @@ namespace Unity.Netcode.Interest
         public void AddObject(TObject obj)
         {
             m_ManagedObjects.Add(obj);
+            foreach (var kernel in m_InterestKernels)
+            {
+                kernel.Item2.OnObjectAdded(obj);
+            }
         }
 
         public void RemoveObject(TObject obj)
         {
+            foreach (var kernel in m_InterestKernels)
+            {
+                kernel.Item2.OnObjectRemoved(obj);
+            }
+
             m_ManagedObjects.Remove(obj);
+            m_DirtyObjects.Remove(obj);
         }
 
         public void QueryFor(TObject client, HashSet<TObject> results)
@@ -49,7 +62,7 @@ namespace Unity.Netcode.Interest
                     var thisKernel = m_InterestKernels[i].Item2;
                     var theseResults = m_ResultSets[i];
                     theseResults.Clear();
-                    foreach (var obj in m_ManagedObjects)
+                    foreach (var obj in m_DirtyObjects)
                     {
                         if (thisKernel.QueryFor(client, obj))
                         {
@@ -74,7 +87,7 @@ namespace Unity.Netcode.Interest
             }
             else
             {
-                results.UnionWith(m_ManagedObjects);
+                results.UnionWith(m_DirtyObjects);
             }
         }
 
@@ -89,6 +102,19 @@ namespace Unity.Netcode.Interest
             m_ResultSets.Add(new HashSet<TObject>());
             m_InterestKernels.Add(new Tuple<bool, IInterestKernel<TObject>>(false, kernel));
         }
+
+        // KEEPSAKE FIX
+        public void MarkInterestDirty(TObject obj)
+        {
+            // we can assume that this is only called for objects in our m_ManagedObjects since the InterestManager tracks that
+            m_DirtyObjects.Add(obj);
+        }
+
+        public void ClearInterestDirty()
+        {
+            m_DirtyObjects.Clear();
+        }
+        // END KEEPSAKE FIX
 
         public void UpdateObject(TObject obj)
         {

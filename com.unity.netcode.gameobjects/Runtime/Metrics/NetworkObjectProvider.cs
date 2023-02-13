@@ -15,7 +15,8 @@ namespace Unity.Netcode
 
         public Object GetNetworkObject(ulong networkObjectId)
         {
-            if(m_NetworkManager.SpawnManager.SpawnedObjects.TryGetValue(networkObjectId, out NetworkObject value))
+            // KEEPSAKE FIX - find objects in Attached instead of Spawned collection
+            if(m_NetworkManager.SpawnManager.AttachedObjects.TryGetValue(networkObjectId, out NetworkObject value))
             {
                 return value;
             }

@@ -7,7 +7,11 @@ namespace Unity.Netcode.Interest
     {
         private InterestNodeStatic<TObject> m_DefaultInterestNode = new InterestNodeStatic<TObject>();
 
-        public bool Disable;
+        // KEEPSAKE FIX - remember interest of those not marked as dirty since last time
+        private Dictionary<TObject, List<TObject>> m_CachedResults = new();
+
+        // KEEPSAKE FIX - reused as "working memory"
+        private HashSet<TObject> m_WorkingResults = new();
 
         public InterestManager()
         {
@@ -28,6 +32,37 @@ namespace Unity.Netcode.Interest
                 }
             }
         }
+
+        // KEEPSAKE FIX
+        public void MarkInterestDirty(ref TObject obj)
+        {
+            if (m_InterestNodesMap.TryGetValue(obj, out var nodes))
+            {
+                foreach (var node in nodes)
+                {
+                    node.MarkInterestDirty(obj);
+                }
+            }
+
+            foreach (var cached in m_CachedResults.Values)
+            {
+                cached.Remove(obj);
+            }
+        }
+
+        public void ClearInterestDirty()
+        {
+            foreach (var c in m_ChildNodes)
+            {
+                c.ClearInterestDirty();
+            }
+        }
+
+        public void OnClientDisconnected(TObject client)
+        {
+            m_CachedResults.Remove(client);
+        }
+        // END KEEPSAKE FIX
 
         public void AddObject(ref TObject obj)
         {
@@ -52,6 +87,9 @@ namespace Unity.Netcode.Interest
                 // if the object doesn't have any nodes, we assign it to the default node
                 AddDefaultInterestNode(obj);
             }
+
+            // KEEPSAKE FIX
+            MarkInterestDirty(ref obj);
         }
 
         public void AddDefaultInterestNode(TObject obj)
@@ -75,21 +113,37 @@ namespace Unity.Netcode.Interest
 
                 m_InterestNodesMap.Remove(obj);
             }
+
+            // KEEPSAKE FIX
+            foreach (var cached in m_CachedResults.Values)
+            {
+                cached.Remove(obj);
+            }
         }
 
-        public void QueryFor(ref TObject client, ref HashSet<TObject> results)
+        // KEEPSAKE FIX - changed results from ref HashSet to out ReadOnlyList since we algorithmically ensure no doubles, and now re-use memory internally
+        public void QueryFor(ref TObject client, out IReadOnlyList<TObject> results)
         {
-            if (!Disable)
+            // cached results that keep their interest from last time checked
+            if (!m_CachedResults.TryGetValue(client, out var cached))
             {
-                foreach (var c in m_ChildNodes)
-                {
-                    c.QueryFor(client, results);
-                }
+                cached = new List<TObject>();
+                m_CachedResults[client] = cached;
             }
-            else
+
+            // query to get interest of "dirty" objects (tracked internally per node)
+            m_WorkingResults.Clear();
+            foreach (var c in m_ChildNodes)
             {
-                results.UnionWith(m_InterestNodesMap.Keys);
+                c.QueryFor(client, m_WorkingResults);
             }
+
+            // save queried objects to the cache
+            // will be removed from cache when flagged as dirty
+            cached.AddRange(m_WorkingResults);
+            m_WorkingResults.Clear();
+
+            results = cached;
         }
 
         public void AddInterestNode(ref TObject obj, IInterestNode<TObject> node)

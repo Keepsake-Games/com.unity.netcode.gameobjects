@@ -141,7 +141,8 @@ namespace Unity.Netcode.Editor.CodeGen
             }
 
             var ilppMessageProviderType = typeof(ILPPMessageProvider);
-            foreach (var fieldInfo in ilppMessageProviderType.GetFields(BindingFlags.Static | BindingFlags.NonPublic))
+            // KEEPSAKE FIX - was made public so lets include that BindingFlag
+            foreach (var fieldInfo in ilppMessageProviderType.GetFields(BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public))
             {
                 switch (fieldInfo.Name)
                 {

@@ -45,6 +45,9 @@ namespace Unity.Netcode
             ShouldResetOnDispatch = true,
         };
 
+        // KEEPSAKE FIX
+        private readonly Gauge m_Rtt = new Gauge(NetworkMetricTypes.Rtt.Id);
+
         private readonly EventMetric<NetworkMessageEvent> m_NetworkMessageSentEvent = new EventMetric<NetworkMessageEvent>(NetworkMetricTypes.NetworkMessageSent.Id);
         private readonly EventMetric<NetworkMessageEvent> m_NetworkMessageReceivedEvent = new EventMetric<NetworkMessageEvent>(NetworkMetricTypes.NetworkMessageReceived.Id);
         private readonly EventMetric<NamedMessageEvent> m_NamedMessageSentEvent = new EventMetric<NamedMessageEvent>(NetworkMetricTypes.NamedMessageSent.Id);
@@ -72,6 +75,7 @@ namespace Unity.Netcode
         {
             Dispatcher = new MetricDispatcherBuilder()
                 .WithCounters(m_TransportBytesSent, m_TransportBytesReceived)
+                .WithGauges(m_Rtt)
                 .WithMetricEvents(m_NetworkMessageSentEvent, m_NetworkMessageReceivedEvent)
                 .WithMetricEvents(m_NamedMessageSentEvent, m_NamedMessageReceivedEvent)
                 .WithMetricEvents(m_UnnamedMessageSentEvent, m_UnnamedMessageReceivedEvent)
@@ -84,10 +88,11 @@ namespace Unity.Netcode
                 .WithMetricEvents(m_SceneEventSentEvent, m_SceneEventReceivedEvent)
                 .Build();
 
-            Dispatcher.RegisterObserver(NetcodeObserver.Observer);
+            // KEEPSAKE FIX - disable default observer, it drains too much performance
+            //Dispatcher.RegisterObserver(NetcodeObserver.Observer);
         }
 
-        internal IMetricDispatcher Dispatcher { get; }
+        public IMetricDispatcher Dispatcher { get; }
 
         private bool CanSendMetrics => m_NumberOfMetricsThisFrame < k_MaxMetricsPerFrame;
 
@@ -104,6 +109,11 @@ namespace Unity.Netcode
         public void TrackTransportBytesReceived(long bytesCount)
         {
             m_TransportBytesReceived.Increment(bytesCount);
+        }
+
+        public void TrackRtt(float rtt)
+        {
+            m_Rtt.Set(rtt);
         }
 
         public void TrackNetworkMessageSent(ulong receivedClientId, string messageType, long bytesCount)

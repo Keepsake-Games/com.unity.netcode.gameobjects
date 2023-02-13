@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System;
 using System.Linq;
+using Cysharp.Threading.Tasks;
 using Unity.Collections;
 using UnityEngine.SceneManagement;
 
@@ -233,6 +234,7 @@ namespace Unity.Netcode
 
         internal void AddSpawnedNetworkObjects()
         {
+            // KEEPSAKE NOTE - we might want to make this Attached and not Spawned, when we know more..
             m_NetworkObjectsSync = m_NetworkManager.SpawnManager.SpawnedObjectsList.ToList();
             m_NetworkObjectsSync.Sort(SortNetworkObjects);
         }
@@ -526,7 +528,7 @@ namespace Unity.Netcode
         /// This needs to occur at the end of a <see cref="SceneEventType.Load"/> event when the scene has finished loading
         /// Maximum number of objects that could theoretically be synchronized is 65536
         /// </summary>
-        internal void DeserializeScenePlacedObjects()
+        internal async UniTask DeserializeScenePlacedObjectsAsync()
         {
             try
             {
@@ -542,7 +544,7 @@ namespace Unity.Netcode
                     // Deserialize the NetworkObject
                     var sceneObject = new NetworkObject.SceneObject();
                     sceneObject.Deserialize(InternalBuffer);
-                    NetworkObject.AddSceneObject(sceneObject, InternalBuffer, m_NetworkManager);
+                    await NetworkObject.AddSceneObjectAsync(sceneObject, InternalBuffer, m_NetworkManager);
                 }
             }
             finally
@@ -583,11 +585,13 @@ namespace Unity.Netcode
                         networkObjectIdToNetworkObject.Remove(networkObjectId);
 
                         networkObject.IsSpawned = false;
+                        networkObject.IsAttached = false; // KEEPSAKE FIX
                         if (m_NetworkManager.PrefabHandler.ContainsHandler(networkObject))
                         {
                             // Since this is the client side and we have missed the delete message, until the Snapshot system is in place for spawn and despawn handling
                             // we have to remove this from the list of spawned objects manually or when a NetworkObjectId is recycled the client will throw an error
                             // about the id already being assigned.
+                            // KEEPSAKE NOTE - letting this be Spawned and not Attached until we know more
                             if (m_NetworkManager.SpawnManager.SpawnedObjects.ContainsKey(networkObjectId))
                             {
                                 m_NetworkManager.SpawnManager.SpawnedObjects.Remove(networkObjectId);
@@ -676,7 +680,7 @@ namespace Unity.Netcode
         /// this process which will be used as part of the Event_Sync_Complete response.
         /// </summary>
         /// <param name="networkManager"></param>
-        internal void SynchronizeSceneNetworkObjects(NetworkManager networkManager)
+        internal async UniTask SynchronizeSceneNetworkObjectsAsync(NetworkManager networkManager)
         {
             try
             {
@@ -694,7 +698,7 @@ namespace Unity.Netcode
                     var sceneObject = new NetworkObject.SceneObject();
                     sceneObject.Deserialize(InternalBuffer);
 
-                    var spawnedNetworkObject = NetworkObject.AddSceneObject(sceneObject, InternalBuffer, networkManager);
+                    var spawnedNetworkObject = await NetworkObject.AddSceneObjectAsync(sceneObject, InternalBuffer, networkManager);
                     if (!m_NetworkObjectsSync.Contains(spawnedNetworkObject))
                     {
                         m_NetworkObjectsSync.Add(spawnedNetworkObject);

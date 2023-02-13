@@ -1,3 +1,6 @@
+using UnityEngine;
+using UnityEngine.Localization;
+
 namespace Unity.Netcode
 {
     /// <summary>
@@ -33,7 +36,8 @@ namespace Unity.Netcode
         /// </summary>
         public bool IsWriter => m_Implementation.IsWriter;
 
-        internal BufferSerializer(TReaderWriter implementation)
+        // KEEPSAKE FIX - made public
+        public BufferSerializer(TReaderWriter implementation)
         {
             m_Implementation = implementation;
         }
@@ -133,13 +137,192 @@ namespace Unity.Netcode
             m_Implementation.SerializeValue(ref value);
         }
 
+        // KEEPSAKE FIX
+
+        // someone more proficient in generics can probably tidy this up /Tobias
+
+        public void SerializeAssetReference(ref UnityEngine.AddressableAssets.AssetReference value)
+        {
+            var assetGuid = string.Empty;;
+            if (m_Implementation.IsWriter)
+            {
+                assetGuid = value.AssetGUID;
+            }
+
+            m_Implementation.SerializeValue(ref assetGuid);
+
+            if (m_Implementation.IsReader)
+            {
+                value = new UnityEngine.AddressableAssets.AssetReference(assetGuid);
+            }
+        }
+
+        public void SerializeAssetReferenceT<T>(ref UnityEngine.AddressableAssets.AssetReferenceT<T> value) where T : Object
+        {
+            var assetGuid = string.Empty;;
+            if (m_Implementation.IsWriter)
+            {
+                assetGuid = value.AssetGUID;
+            }
+
+            m_Implementation.SerializeValue(ref assetGuid);
+
+            if (m_Implementation.IsReader)
+            {
+                value = new UnityEngine.AddressableAssets.AssetReferenceT<T>(assetGuid);
+            }
+        }
+
+        public void SerializeAssetReference(ref UnityEngine.AddressableAssets.AssetReferenceGameObject value)
+        {
+            var assetGuid = string.Empty;;
+            if (m_Implementation.IsWriter)
+            {
+                assetGuid = value.AssetGUID;
+            }
+
+            m_Implementation.SerializeValue(ref assetGuid);
+
+            if (m_Implementation.IsReader)
+            {
+                value = new UnityEngine.AddressableAssets.AssetReferenceGameObject(assetGuid);
+            }
+        }
+
+        public void SerializeAssetReference(ref UnityEngine.AddressableAssets.AssetReferenceSprite value)
+        {
+            var assetGuid = string.Empty;;
+            if (m_Implementation.IsWriter)
+            {
+                assetGuid = value.AssetGUID;
+            }
+
+            m_Implementation.SerializeValue(ref assetGuid);
+
+            if (m_Implementation.IsReader)
+            {
+                value = new UnityEngine.AddressableAssets.AssetReferenceSprite(assetGuid);
+            }
+        }
+
+        public void SerializeAssetReferencesT<T>(ref System.Collections.Generic.List<UnityEngine.AddressableAssets.AssetReferenceT<T>> value) where T : Object
+        {
+            int count = default;
+            if (m_Implementation.IsWriter)
+            {
+                count = value.Count;
+            }
+
+            m_Implementation.SerializeValue(ref count);
+
+            if (m_Implementation.IsReader)
+            {
+                value = new System.Collections.Generic.List<UnityEngine.AddressableAssets.AssetReferenceT<T>>(count);
+            }
+
+            for (var i = 0; i < count; ++i)
+            {
+                var assetGuid = string.Empty;;
+                if (m_Implementation.IsWriter)
+                {
+                    assetGuid = value[i].AssetGUID;
+                }
+
+                m_Implementation.SerializeValue(ref assetGuid);
+
+                if (m_Implementation.IsReader)
+                {
+                    value.Add(new UnityEngine.AddressableAssets.AssetReferenceT<T>(assetGuid));
+                }
+            }
+        }
+
+        public void SerializeLocalizedString(ref LocalizedString locString)
+        {
+            string tableRef = default;
+            long entryRef = default;
+            if (m_Implementation.IsWriter)
+            {
+                tableRef = locString.TableReference;
+                entryRef = locString.TableEntryReference;
+            }
+            m_Implementation.SerializeValue(ref tableRef);
+            m_Implementation.SerializeValue(ref entryRef);
+            if (m_Implementation.IsReader)
+            {
+                locString = new LocalizedString(tableRef, entryRef);
+            }
+        }
+
+        public void SerializeAnimationCurve(ref AnimationCurve curve)
+        {
+            var isNull = false;
+            if (IsWriter)
+            {
+                isNull = curve == null;
+            }
+            SerializeValue(ref isNull);
+            if (isNull)
+            {
+                if (IsReader)
+                {
+                    curve = null;
+                }
+                return;
+            }
+
+            int keyframeCount = default;
+            if (IsWriter)
+            {
+                keyframeCount = curve.keys.Length;
+            }
+            SerializeValue(ref keyframeCount);
+            if (IsReader)
+            {
+                curve ??= new AnimationCurve();
+                if (curve.keys.Length != keyframeCount)
+                {
+                    curve.keys = new Keyframe[keyframeCount];
+                }
+            }
+
+            for (var i = 0; i < keyframeCount; i++)
+            {
+                float keyTime = default;
+                float keyValue = default;
+                float keyInTangent = default;
+                float keyOutTangent = default;
+                if (IsWriter)
+                {
+                    keyTime = curve.keys[i].time;
+                    keyValue = curve.keys[i].value;
+                    keyInTangent = curve.keys[i].inTangent;
+                    keyOutTangent = curve.keys[i].outTangent;
+                }
+
+                SerializeValue(ref keyTime);
+                SerializeValue(ref keyValue);
+                SerializeValue(ref keyInTangent);
+                SerializeValue(ref keyOutTangent);
+
+                if (IsReader)
+                {
+                    curve.keys[i].time = keyTime;
+                    curve.keys[i].time = keyValue;
+                    curve.keys[i].time = keyInTangent;
+                    curve.keys[i].time = keyOutTangent;
+                }
+            }
+        }
+        // END KEEPSAKE FIX
+
         /// <summary>
         /// Allows faster serialization by batching bounds checking.
         /// When you know you will be writing multiple fields back-to-back and you know the total size,
         /// you can call PreCheck() once on the total size, and then follow it with calls to
         /// SerializeValuePreChecked() for faster serialization. Write buffers will grow during PreCheck()
         /// if needed.
-        /// 
+        ///
         /// PreChecked serialization operations will throw OverflowException in editor and development builds if you
         /// go past the point you've marked using PreCheck(). In release builds, OverflowException will not be thrown
         /// for performance reasons, since the point of using PreCheck is to avoid bounds checking in the following
@@ -157,7 +340,7 @@ namespace Unity.Netcode
 
         /// <summary>
         /// Serialize a string.
-        /// 
+        ///
         /// Note: Will ALWAYS allocate a new string when reading.
         ///
         /// Using the PreChecked versions of these functions requires calling PreCheck() ahead of time, and they should only
@@ -180,7 +363,7 @@ namespace Unity.Netcode
         /// Note: Will ALWAYS allocate a new array when reading.
         /// If you have a statically-sized array that you know is large enough, it's recommended to
         /// serialize the size yourself and iterate serializing array members.
-        /// 
+        ///
         /// (This is because C# doesn't allow setting an array's length value, so deserializing
         /// into an existing array of larger size would result in an array that doesn't have as many values
         /// as its Length indicates it should.)

@@ -34,18 +34,24 @@ namespace Unity.Netcode
     /// </summary>
     public static class NetworkUpdateLoop
     {
-        private static Dictionary<NetworkUpdateStage, HashSet<INetworkUpdateSystem>> s_UpdateSystem_Sets;
+        // KEEPSAKE FIX - track update loop systems in List instead of Set to preserve insertion order
+        private static Dictionary<NetworkUpdateStage, List<INetworkUpdateSystem>> s_UpdateSystem_Lists;
+        //private static Dictionary<NetworkUpdateStage, HashSet<INetworkUpdateSystem>> s_UpdateSystem_Sets;
         private static Dictionary<NetworkUpdateStage, INetworkUpdateSystem[]> s_UpdateSystem_Arrays;
         private const int k_UpdateSystem_InitialArrayCapacity = 1024;
 
         static NetworkUpdateLoop()
         {
-            s_UpdateSystem_Sets = new Dictionary<NetworkUpdateStage, HashSet<INetworkUpdateSystem>>();
+            // KEEPSAKE FIX
+            s_UpdateSystem_Lists = new Dictionary<NetworkUpdateStage, List<INetworkUpdateSystem>>();
+            //s_UpdateSystem_Sets = new Dictionary<NetworkUpdateStage, HashSet<INetworkUpdateSystem>>();
             s_UpdateSystem_Arrays = new Dictionary<NetworkUpdateStage, INetworkUpdateSystem[]>();
 
             foreach (NetworkUpdateStage updateStage in Enum.GetValues(typeof(NetworkUpdateStage)))
             {
-                s_UpdateSystem_Sets.Add(updateStage, new HashSet<INetworkUpdateSystem>());
+                // KEEPSAKE FIX
+                s_UpdateSystem_Lists.Add(updateStage, new List<INetworkUpdateSystem>());
+                //s_UpdateSystem_Sets.Add(updateStage, new HashSet<INetworkUpdateSystem>());
                 s_UpdateSystem_Arrays.Add(updateStage, new INetworkUpdateSystem[k_UpdateSystem_InitialArrayCapacity]);
             }
         }
@@ -64,14 +70,24 @@ namespace Unity.Netcode
         /// <summary>
         /// Registers a network update system to be executed in a specific network update stage.
         /// </summary>
-        public static void RegisterNetworkUpdate(this INetworkUpdateSystem updateSystem, NetworkUpdateStage updateStage = NetworkUpdateStage.Update)
+        /// KEEPSAKE FIX - added insertFirst param
+        public static void RegisterNetworkUpdate(this INetworkUpdateSystem updateSystem, NetworkUpdateStage updateStage = NetworkUpdateStage.Update, bool insertFirst = false)
         {
-            var sysSet = s_UpdateSystem_Sets[updateStage];
-            if (!sysSet.Contains(updateSystem))
+            // KEEPSAKE FIX
+            var sysList = s_UpdateSystem_Lists[updateStage];
+            if (!sysList.Contains(updateSystem))
             {
-                sysSet.Add(updateSystem);
+                // KEEPSAKE FIX - insertFirst
+                if (insertFirst && sysList.Count > 0)
+                {
+                    sysList.Insert(0, updateSystem);
+                }
+                else
+                {
+                    sysList.Add(updateSystem);
+                }
 
-                int setLen = sysSet.Count;
+                int setLen = sysList.Count;
                 var sysArr = s_UpdateSystem_Arrays[updateStage];
                 int arrLen = sysArr.Length;
 
@@ -81,7 +97,7 @@ namespace Unity.Netcode
                     sysArr = s_UpdateSystem_Arrays[updateStage] = new INetworkUpdateSystem[arrLen *= 2];
                 }
 
-                sysSet.CopyTo(sysArr);
+                sysList.CopyTo(sysArr);
 
                 if (setLen < arrLen)
                 {
@@ -107,16 +123,17 @@ namespace Unity.Netcode
         /// </summary>
         public static void UnregisterNetworkUpdate(this INetworkUpdateSystem updateSystem, NetworkUpdateStage updateStage = NetworkUpdateStage.Update)
         {
-            var sysSet = s_UpdateSystem_Sets[updateStage];
-            if (sysSet.Contains(updateSystem))
+            // KEEPSAKE FIX
+            var sysList = s_UpdateSystem_Lists[updateStage];
+            if (sysList.Contains(updateSystem))
             {
-                sysSet.Remove(updateSystem);
+                sysList.Remove(updateSystem);
 
-                int setLen = sysSet.Count;
+                int setLen = sysList.Count;
                 var sysArr = s_UpdateSystem_Arrays[updateStage];
                 int arrLen = sysArr.Length;
 
-                sysSet.CopyTo(sysArr);
+                sysList.CopyTo(sysArr);
 
                 if (setLen < arrLen)
                 {

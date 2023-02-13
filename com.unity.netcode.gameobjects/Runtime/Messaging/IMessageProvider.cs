@@ -2,7 +2,8 @@ using System.Collections.Generic;
 
 namespace Unity.Netcode
 {
-    internal interface IMessageProvider
+    // KEEPSAKE FIX made public
+    public interface IMessageProvider
     {
         List<MessagingSystem.MessageWithHandler> GetMessages();
     }

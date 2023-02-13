@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using Cysharp.Threading.Tasks;
+using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 
 namespace Unity.Netcode
 {
@@ -8,10 +11,13 @@ namespace Unity.Netcode
         public ulong OwnerClientId;
         public int NetworkTick;
 
+        // KEEPSAKE FIX
+        public bool SyncOnlyPlayerObjects;
+
         // Not serialized, held as references to serialize NetworkVariable data
         public HashSet<NetworkObject> SpawnedObjectsList;
 
-        private FastBufferReader m_ReceivedSceneObjectData;
+        private NativeArray<byte> m_ReceivedSceneObjectData;
 
         public void Serialize(FastBufferWriter writer)
         {
@@ -34,9 +40,20 @@ namespace Unity.Netcode
                 {
                     if (sobj.CheckObjectVisibility == null || sobj.CheckObjectVisibility(OwnerClientId))
                     {
+                        if (SyncOnlyPlayerObjects && !sobj.IsPlayerObject)
+                        {
+                            continue;
+                        }
+
                         sobj.Observers.Add(OwnerClientId);
                         var sceneObject = sobj.GetMessageSceneObject(OwnerClientId);
                         sceneObject.Serialize(writer);
+
+                        #if KEEPSAKE_BUILD_DEBUG || KEEPSAKE_BUILD_DEVELOPMENT
+                        writer.WriteValueSafe("end_scene_object", true);
+                        #endif
+
+                        UnityEngine.Debug.Log($"ConnectionApprovedMessage scene object with hash {sobj.GlobalObjectIdHash} -- {sobj}");
                         ++sceneObjectCount;
                     }
                 }
@@ -66,7 +83,17 @@ namespace Unity.Netcode
 
             reader.ReadValue(out OwnerClientId);
             reader.ReadValue(out NetworkTick);
-            m_ReceivedSceneObjectData = reader;
+            m_ReceivedSceneObjectData = new NativeArray<byte>(
+                reader.Length - reader.Position,
+                Allocator.Persistent,
+                NativeArrayOptions.UninitializedMemory);
+            unsafe
+            {
+                UnsafeUtility.MemCpy(
+                    m_ReceivedSceneObjectData.GetUnsafePtr(),
+                    reader.GetUnsafePtrAtCurrentPosition(),
+                    m_ReceivedSceneObjectData.Length);
+            }
             return true;
         }
 
@@ -83,24 +110,51 @@ namespace Unity.Netcode
             networkManager.LocalClient = new NetworkClient() { ClientId = networkManager.LocalClientId };
 
             // Only if scene management is disabled do we handle NetworkObject synchronization at this point
-            if (!networkManager.NetworkConfig.EnableSceneManagement)
+            // KEEPSAKE FIX - use our more granular sync settings
+            if (networkManager.NetworkConfig.SyncAllNetworkObjectsInConnectionApprovedMessage || networkManager.NetworkConfig.SyncPlayerObjectsInConnectionApprovedMessage)
             {
-                networkManager.SpawnManager.DestroySceneObjects();
-                m_ReceivedSceneObjectData.ReadValue(out uint sceneObjectCount);
+                // KEEPSAKE FIX - Don't call this, it destroys our LegacyNetwork manager which is placed in Global and loaded at this point, should Netcode just hook it up rather than destroying?
+                //                Its possible we'll need to re-enable this later when we know more
+                //networkManager.SpawnManager.DestroySceneObjects();
+
+                HandleAsync(context.SenderId, m_ReceivedSceneObjectData, networkManager).Forget();
+            }
+        }
+
+        private static async UniTask HandleAsync(ulong senderId, NativeArray<byte> allSceneObjectsData, NetworkManager networkManager)
+        {
+            try
+            {
+                // We used to use Allocator.None to not have to copy the byte data (we control its lifetime anyway) BUT that didn't work
+                // since FastBufferReader will allocate some internals in Temp which has a sub-frame lifetime and thus incompatible with async/await
+                using var reader = new FastBufferReader(allSceneObjectsData, Allocator.Persistent);
+                reader.ReadValueSafe(out uint sceneObjectCount);
 
                 // Deserializing NetworkVariable data is deferred from Receive() to Handle to avoid needing
                 // to create a list to hold the data. This is a breach of convention for performance reasons.
                 for (ushort i = 0; i < sceneObjectCount; i++)
                 {
                     var sceneObject = new NetworkObject.SceneObject();
-                    sceneObject.Deserialize(m_ReceivedSceneObjectData);
-                    NetworkObject.AddSceneObject(sceneObject, m_ReceivedSceneObjectData, networkManager);
+                    sceneObject.Deserialize(reader);
+                    await NetworkObject.AddSceneObjectAsync(sceneObject, reader, networkManager);
+
+                    #if KEEPSAKE_BUILD_DEBUG || KEEPSAKE_BUILD_DEVELOPMENT
+                    reader.ReadValueSafe(out var marker, true);
+                    UnityEngine.Debug.Assert(marker == "end_scene_object", "scene object in packet ends with correct marker");
+                    #endif
                 }
 
                 // Mark the client being connected
                 networkManager.IsConnectedClient = true;
                 // When scene management is disabled we notify after everything is synchronized
-                networkManager.InvokeOnClientConnectedCallback(context.SenderId);
+                networkManager.InvokeOnClientConnectedCallback(senderId);
+            }
+            finally
+            {
+                if (allSceneObjectsData.IsCreated)
+                {
+                    allSceneObjectsData.Dispose();
+                }
             }
         }
     }

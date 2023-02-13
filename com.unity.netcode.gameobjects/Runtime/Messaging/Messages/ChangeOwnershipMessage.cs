@@ -17,7 +17,8 @@ namespace Unity.Netcode
                 return false;
             }
             reader.ReadValueSafe(out this);
-            if (!networkManager.SpawnManager.SpawnedObjects.ContainsKey(NetworkObjectId))
+            // KEEPSAKE FIX - check in Attached instead of Spawned, feels a bit weird with triggering the OnSpawn if not but I guess Netcode knows?
+            if (!networkManager.SpawnManager.AttachedObjects.ContainsKey(NetworkObjectId))
             {
                 networkManager.SpawnManager.TriggerOnSpawn(NetworkObjectId, reader, ref context);
                 return false;
@@ -30,7 +31,8 @@ namespace Unity.Netcode
         {
 
             var networkManager = (NetworkManager)context.SystemOwner;
-            var networkObject = networkManager.SpawnManager.SpawnedObjects[NetworkObjectId];
+            // KEEPSAKE FIX - Attached instead of Spawned
+            var networkObject = networkManager.SpawnManager.AttachedObjects[NetworkObjectId];
 
             if (networkObject.OwnerClientId == networkManager.LocalClientId)
             {

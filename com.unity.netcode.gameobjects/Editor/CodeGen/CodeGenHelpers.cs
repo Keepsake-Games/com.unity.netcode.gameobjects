@@ -16,25 +16,26 @@ namespace Unity.Netcode.Editor.CodeGen
     {
         public const string RuntimeAssemblyName = "Unity.Netcode.Runtime";
 
-        public static readonly string NetworkBehaviour_FullName = typeof(NetworkBehaviour).FullName;
-        public static readonly string INetworkMessage_FullName = typeof(INetworkMessage).FullName;
-        public static readonly string ServerRpcAttribute_FullName = typeof(ServerRpcAttribute).FullName;
-        public static readonly string ClientRpcAttribute_FullName = typeof(ClientRpcAttribute).FullName;
-        public static readonly string ServerRpcParams_FullName = typeof(ServerRpcParams).FullName;
-        public static readonly string ClientRpcParams_FullName = typeof(ClientRpcParams).FullName;
-        public static readonly string ClientRpcSendParams_FullName = typeof(ClientRpcSendParams).FullName;
+        public static readonly string NetworkBehaviour_FullName       = typeof(NetworkBehaviour).FullName;
+        public static readonly string INetworkMessage_FullName        = typeof(INetworkMessage).FullName;
+        public static readonly string INetworkRpcHandler_FullName     = typeof(INetworkRpcHandler).FullName; // KEEPSAKE FIX
+        public static readonly string ServerRpcAttribute_FullName     = typeof(ServerRpcAttribute).FullName;
+        public static readonly string ClientRpcAttribute_FullName     = typeof(ClientRpcAttribute).FullName;
+        public static readonly string ServerRpcParams_FullName        = typeof(ServerRpcParams).FullName;
+        public static readonly string ClientRpcParams_FullName        = typeof(ClientRpcParams).FullName;
+        public static readonly string ClientRpcSendParams_FullName    = typeof(ClientRpcSendParams).FullName;
         public static readonly string ClientRpcReceiveParams_FullName = typeof(ClientRpcReceiveParams).FullName;
-        public static readonly string ServerRpcSendParams_FullName = typeof(ServerRpcSendParams).FullName;
+        public static readonly string ServerRpcSendParams_FullName    = typeof(ServerRpcSendParams).FullName;
         public static readonly string ServerRpcReceiveParams_FullName = typeof(ServerRpcReceiveParams).FullName;
-        public static readonly string INetworkSerializable_FullName = typeof(INetworkSerializable).FullName;
-        public static readonly string UnityColor_FullName = typeof(Color).FullName;
-        public static readonly string UnityColor32_FullName = typeof(Color32).FullName;
-        public static readonly string UnityVector2_FullName = typeof(Vector2).FullName;
-        public static readonly string UnityVector3_FullName = typeof(Vector3).FullName;
-        public static readonly string UnityVector4_FullName = typeof(Vector4).FullName;
-        public static readonly string UnityQuaternion_FullName = typeof(Quaternion).FullName;
-        public static readonly string UnityRay_FullName = typeof(Ray).FullName;
-        public static readonly string UnityRay2D_FullName = typeof(Ray2D).FullName;
+        public static readonly string INetworkSerializable_FullName   = typeof(INetworkSerializable).FullName;
+        public static readonly string UnityColor_FullName             = typeof(Color).FullName;
+        public static readonly string UnityColor32_FullName           = typeof(Color32).FullName;
+        public static readonly string UnityVector2_FullName           = typeof(Vector2).FullName;
+        public static readonly string UnityVector3_FullName           = typeof(Vector3).FullName;
+        public static readonly string UnityVector4_FullName           = typeof(Vector4).FullName;
+        public static readonly string UnityQuaternion_FullName        = typeof(Quaternion).FullName;
+        public static readonly string UnityRay_FullName               = typeof(Ray).FullName;
+        public static readonly string UnityRay2D_FullName             = typeof(Ray2D).FullName;
 
         public static uint Hash(this MethodDefinition methodDefinition)
         {
@@ -77,22 +78,50 @@ namespace Unity.Netcode.Editor.CodeGen
             return false;
         }
 
-        public static bool HasInterface(this TypeReference typeReference, string interfaceTypeFullName)
+        // KEEPSAKE FIX - added checkBaseTypes param
+        public static bool HasInterface(this TypeReference typeReference, string interfaceTypeFullName, bool checkBaseTypes = false)
         {
             if (typeReference.IsArray)
             {
                 return false;
             }
 
-            try
+            if (checkBaseTypes)
             {
+                // KEEPSAKE FIX
                 var typeDef = typeReference.Resolve();
-                var typeFaces = typeDef.Interfaces;
-                return typeFaces.Any(iface => iface.InterfaceType.FullName == interfaceTypeFullName);
-            }
-            catch
-            {
+                while (typeDef != null)
+                {
+                    var typeFaces = typeDef.Interfaces;
+                    if (typeFaces.Any(iface => iface.InterfaceType.FullName == interfaceTypeFullName))
+                    {
+                        return true;
+                    }
+
+                    try
+                    {
+                        typeDef = typeDef.BaseType.Resolve();
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+                }
+
                 return false;
+            }
+            else
+            {
+                try
+                {
+                    var typeDef = typeReference.Resolve();
+                    var typeFaces = typeDef.Interfaces;
+                    return typeFaces.Any(iface => iface.InterfaceType.FullName == interfaceTypeFullName);
+                }
+                catch
+                {
+                    return false;
+                }
             }
         }
 

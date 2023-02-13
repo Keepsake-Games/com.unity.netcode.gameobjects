@@ -59,6 +59,14 @@ namespace Unity.Netcode.Editor.CodeGen
                             .Where(t => t.IsSubclassOf(CodeGenHelpers.NetworkBehaviour_FullName))
                             .ToList()
                             .ForEach(b => ProcessNetworkBehaviour(b, compiledAssembly.Defines));
+
+                        // KEEPSAKE FIX - support for other RPC base classes using INetworkRpcHandler
+                        mainModule.GetTypes()
+                                  .Where(
+                                      t => t.HasInterface(CodeGenHelpers.INetworkRpcHandler_FullName, true)
+                                           && !t.IsSubclassOf(CodeGenHelpers.NetworkBehaviour_FullName)
+                                           && !t.Resolve().IsAbstract).ToList().ForEach(
+                                      h => ProcessINetworkRpcHandler(h, compiledAssembly.Defines));
                     }
                     catch (Exception e)
                     {
@@ -95,33 +103,42 @@ namespace Unity.Netcode.Editor.CodeGen
         private PostProcessorAssemblyResolver m_AssemblyResolver;
 
         private MethodReference m_Debug_LogError_MethodRef;
-        private TypeReference m_NetworkManager_TypeRef;
+        private TypeReference   m_NetworkManager_TypeRef;
         private MethodReference m_NetworkManager_getLocalClientId_MethodRef;
         private MethodReference m_NetworkManager_getIsListening_MethodRef;
         private MethodReference m_NetworkManager_getIsHost_MethodRef;
         private MethodReference m_NetworkManager_getIsServer_MethodRef;
         private MethodReference m_NetworkManager_getIsClient_MethodRef;
-        private FieldReference m_NetworkManager_LogLevel_FieldRef;
-        private FieldReference m_NetworkManager_rpc_func_table_FieldRef;
+        private FieldReference  m_NetworkManager_LogLevel_FieldRef;
+        private FieldReference  m_NetworkManager_rpc_func_table_FieldRef;
         private MethodReference m_NetworkManager_rpc_func_table_Add_MethodRef;
-        private FieldReference m_NetworkManager_rpc_name_table_FieldRef;
+        private FieldReference  m_NetworkManager_rpc_name_table_FieldRef;
         private MethodReference m_NetworkManager_rpc_name_table_Add_MethodRef;
-        private TypeReference m_NetworkBehaviour_TypeRef;
+        private TypeReference   m_NetworkBehaviour_TypeRef;
         private MethodReference m_NetworkBehaviour_beginSendServerRpc_MethodRef;
         private MethodReference m_NetworkBehaviour_endSendServerRpc_MethodRef;
         private MethodReference m_NetworkBehaviour_beginSendClientRpc_MethodRef;
         private MethodReference m_NetworkBehaviour_endSendClientRpc_MethodRef;
-        private FieldReference m_NetworkBehaviour_rpc_exec_stage_FieldRef;
+        private FieldReference  m_NetworkBehaviour_rpc_exec_stage_FieldRef;
         private MethodReference m_NetworkBehaviour_getNetworkManager_MethodRef;
         private MethodReference m_NetworkBehaviour_getOwnerClientId_MethodRef;
         private MethodReference m_NetworkHandlerDelegateCtor_MethodRef;
-        private TypeReference m_RpcParams_TypeRef;
-        private FieldReference m_RpcParams_Server_FieldRef;
-        private FieldReference m_RpcParams_Client_FieldRef;
-        private TypeReference m_ServerRpcParams_TypeRef;
-        private FieldReference m_ServerRpcParams_Receive_FieldRef;
-        private FieldReference m_ServerRpcParams_Receive_SenderClientId_FieldRef;
-        private TypeReference m_ClientRpcParams_TypeRef;
+        private TypeReference   m_INetworkRpcHandler_TypeRef;
+        private MethodReference m_INetworkRpcHandler_beginSendServerRpc_MethodRef;
+        private MethodReference m_INetworkRpcHandler_endSendServerRpc_MethodRef;
+        private MethodReference m_INetworkRpcHandler_beginSendClientRpc_MethodRef;
+        private MethodReference m_INetworkRpcHandler_endSendClientRpc_MethodRef;
+        private MethodReference m_INetworkRpcHandler_get_rpc_exec_stage_MethodRef;
+        private MethodReference m_INetworkRpcHandler_set_rpc_exec_stage_MethodRef;
+        private MethodReference m_INetworkRpcHandler_getNetworkManager_MethodRef;
+        private MethodReference m_INetworkRpcHandler_getOwnerClientId_MethodRef;
+        private TypeReference   m_RpcParams_TypeRef;
+        private FieldReference  m_RpcParams_Server_FieldRef;
+        private FieldReference  m_RpcParams_Client_FieldRef;
+        private TypeReference   m_ServerRpcParams_TypeRef;
+        private FieldReference  m_ServerRpcParams_Receive_FieldRef;
+        private FieldReference  m_ServerRpcParams_Receive_SenderClientId_FieldRef;
+        private TypeReference   m_ClientRpcParams_TypeRef;
 
         private TypeReference m_FastBufferWriter_TypeRef;
         private Dictionary<string, MethodReference> m_FastBufferWriter_WriteValue_MethodRefs = new Dictionary<string, MethodReference>();
@@ -151,6 +168,7 @@ namespace Unity.Netcode.Editor.CodeGen
 
         private const string k_RpcAttribute_Delivery = nameof(RpcAttribute.Delivery);
         private const string k_ServerRpcAttribute_RequireOwnership = nameof(ServerRpcAttribute.RequireOwnership);
+        private const string k_ServerRpcAttribute_WithLocalPrediction = nameof(ServerRpcAttribute.WithLocalPrediction); // KEEPSAKE FIX
         private const string k_RpcParams_Server = nameof(__RpcParams.Server);
         private const string k_RpcParams_Client = nameof(__RpcParams.Client);
         private const string k_ServerRpcParams_Receive = nameof(ServerRpcParams.Receive);
@@ -258,6 +276,46 @@ namespace Unity.Netcode.Editor.CodeGen
                         break;
                 }
             }
+
+            // KEEPSAKE FIX - INetworkRpcHandler
+            var iNetworkRpcHandlerType = typeof(INetworkRpcHandler);
+            m_INetworkRpcHandler_TypeRef = moduleDefinition.ImportReference(iNetworkRpcHandlerType);
+            foreach (var propertyInfo in iNetworkRpcHandlerType.GetProperties())
+            {
+                switch (propertyInfo.Name)
+                {
+                    case k_NetworkBehaviour_NetworkManager: // KEEPSAKE NOTE: reusing same keys as in NetworkBehaviour
+                        m_INetworkRpcHandler_getNetworkManager_MethodRef = moduleDefinition.ImportReference(propertyInfo.GetMethod);
+                        break;
+                    case k_NetworkBehaviour_OwnerClientId:
+                        m_INetworkRpcHandler_getOwnerClientId_MethodRef = moduleDefinition.ImportReference(propertyInfo.GetMethod);
+                        break;
+                    case k_NetworkBehaviour_rpc_exec_stage: // KEEPSAKE NOTE: reusing keys from NetworkBehaviour
+                        m_INetworkRpcHandler_get_rpc_exec_stage_MethodRef = moduleDefinition.ImportReference(propertyInfo.GetMethod);
+                        m_INetworkRpcHandler_set_rpc_exec_stage_MethodRef = moduleDefinition.ImportReference(propertyInfo.SetMethod);
+                        break;
+                }
+            }
+
+            foreach (var methodInfo in iNetworkRpcHandlerType.GetMethods(BindingFlags.Static | BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
+            {
+                switch (methodInfo.Name)
+                {
+                    case k_NetworkBehaviour_beginSendServerRpc: // KEEPSAKE NOTE: reusing same keys as in NetworkBehaviour
+                        m_INetworkRpcHandler_beginSendServerRpc_MethodRef = moduleDefinition.ImportReference(methodInfo);
+                        break;
+                    case k_NetworkBehaviour_endSendServerRpc:
+                        m_INetworkRpcHandler_endSendServerRpc_MethodRef = moduleDefinition.ImportReference(methodInfo);
+                        break;
+                    case k_NetworkBehaviour_beginSendClientRpc:
+                        m_INetworkRpcHandler_beginSendClientRpc_MethodRef = moduleDefinition.ImportReference(methodInfo);
+                        break;
+                    case k_NetworkBehaviour_endSendClientRpc:
+                        m_INetworkRpcHandler_endSendClientRpc_MethodRef = moduleDefinition.ImportReference(methodInfo);
+                        break;
+                }
+            }
+            // END KEEPSAKE FIX
 
             var networkHandlerDelegateType = typeof(NetworkManager.RpcReceiveHandler);
             m_NetworkHandlerDelegateCtor_MethodRef = moduleDefinition.ImportReference(networkHandlerDelegateType.GetConstructor(new[] { typeof(object), typeof(IntPtr) }));
@@ -473,6 +531,111 @@ namespace Unity.Netcode.Editor.CodeGen
             m_MainModule.RemoveRecursiveReferences();
         }
 
+        // KEEPSAKE FIX
+        private void ProcessINetworkRpcHandler(TypeDefinition typeDefinition, string[] assemblyDefines)
+        {
+            // KEEPSAKE NOTE: copy of ProcessNetworkBehaviour, marked with KEEPSAKE FIX where diverge more than just NetworkBehaviour -> INetworkRpcHandler
+
+            var rpcHandlers = new List<(uint RpcMethodId, MethodDefinition RpcHandler)>();
+            var rpcNames = new List<(uint RpcMethodId, string RpcMethodName)>();
+
+            bool isEditorOrDevelopment = assemblyDefines.Contains("UNITY_EDITOR") || assemblyDefines.Contains("DEVELOPMENT_BUILD");
+
+            foreach (var methodDefinition in typeDefinition.Methods)
+            {
+
+                var rpcAttribute = CheckAndGetRpcAttribute(methodDefinition);
+                if (rpcAttribute == null)
+                {
+                    continue;
+                }
+
+                var rpcMethodId = methodDefinition.Hash();
+                if (rpcMethodId == 0)
+                {
+                    continue;
+                }
+
+                InjectWriteAndCallBlocks_INetworkRpcHandler(methodDefinition, rpcAttribute, rpcMethodId);
+
+                rpcHandlers.Add((rpcMethodId, GenerateStaticHandler_INetworkRpcHandler(methodDefinition, rpcAttribute)));
+
+                if (isEditorOrDevelopment)
+                {
+                    rpcNames.Add((rpcMethodId, methodDefinition.Name));
+                }
+            }
+
+            if (rpcHandlers.Count > 0 || rpcNames.Count > 0)
+            {
+                var staticCtorMethodDef = typeDefinition.GetStaticConstructor();
+                if (staticCtorMethodDef == null)
+                {
+                    staticCtorMethodDef = new MethodDefinition(
+                        ".cctor", // Static Constructor (constant-constructor)
+                        MethodAttributes.HideBySig |
+                        MethodAttributes.SpecialName |
+                        MethodAttributes.RTSpecialName |
+                        MethodAttributes.Static,
+                        typeDefinition.Module.TypeSystem.Void);
+                    staticCtorMethodDef.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+                    typeDefinition.Methods.Add(staticCtorMethodDef);
+                }
+
+                var instructions = new List<Instruction>();
+                var processor = staticCtorMethodDef.Body.GetILProcessor();
+
+                foreach (var (rpcMethodId, rpcHandler) in rpcHandlers)
+                {
+                    typeDefinition.Methods.Add(rpcHandler);
+
+                    // NetworkManager.__rpc_func_table.Add(RpcMethodId, HandleFunc);
+                    instructions.Add(processor.Create(OpCodes.Ldsfld, m_NetworkManager_rpc_func_table_FieldRef));
+                    instructions.Add(processor.Create(OpCodes.Ldc_I4, unchecked((int)rpcMethodId)));
+                    instructions.Add(processor.Create(OpCodes.Ldnull));
+                    instructions.Add(processor.Create(OpCodes.Ldftn, rpcHandler));
+                    instructions.Add(processor.Create(OpCodes.Newobj, m_NetworkHandlerDelegateCtor_MethodRef));
+                    instructions.Add(processor.Create(OpCodes.Call, m_NetworkManager_rpc_func_table_Add_MethodRef));
+                }
+
+                foreach (var (rpcMethodId, rpcMethodName) in rpcNames)
+                {
+                    // NetworkManager.__rpc_name_table.Add(RpcMethodId, RpcMethodName);
+                    instructions.Add(processor.Create(OpCodes.Ldsfld, m_NetworkManager_rpc_name_table_FieldRef));
+                    instructions.Add(processor.Create(OpCodes.Ldc_I4, unchecked((int)rpcMethodId)));
+                    instructions.Add(processor.Create(OpCodes.Ldstr, rpcMethodName));
+                    instructions.Add(processor.Create(OpCodes.Call, m_NetworkManager_rpc_name_table_Add_MethodRef));
+                }
+
+                instructions.Reverse();
+                instructions.ForEach(instruction => processor.Body.Instructions.Insert(0, instruction));
+            }
+
+            // override INetworkRpcHandler.__getTypeName() method to return concrete type
+            {
+                var iNetworkRpcHandler_TypeDef = m_INetworkRpcHandler_TypeRef.Resolve();
+
+                var baseGetTypeNameMethod = iNetworkRpcHandler_TypeDef.Methods.First(p => p.Name.Equals(nameof(INetworkRpcHandler.__getTypeName)));
+
+                var newGetTypeNameMethod = new MethodDefinition(
+                    nameof(INetworkRpcHandler.__getTypeName),
+                    (baseGetTypeNameMethod.Attributes & ~MethodAttributes.NewSlot) | MethodAttributes.ReuseSlot,
+                    baseGetTypeNameMethod.ReturnType)
+                {
+                    ImplAttributes = baseGetTypeNameMethod.ImplAttributes,
+                    SemanticsAttributes = baseGetTypeNameMethod.SemanticsAttributes
+                };
+
+                var processor = newGetTypeNameMethod.Body.GetILProcessor();
+                processor.Body.Instructions.Add(processor.Create(OpCodes.Ldstr, typeDefinition.Name));
+                processor.Body.Instructions.Add(processor.Create(OpCodes.Ret));
+
+                typeDefinition.Methods.Add(newGetTypeNameMethod);
+            }
+
+            m_MainModule.RemoveRecursiveReferences();
+        }
+
         private CustomAttribute CheckAndGetRpcAttribute(MethodDefinition methodDefinition)
         {
             CustomAttribute rpcAttribute = null;
@@ -503,11 +666,31 @@ namespace Unity.Netcode.Editor.CodeGen
                         isValid = false;
                     }
 
-                    if (customAttributeType_FullName == CodeGenHelpers.ServerRpcAttribute_FullName &&
-                        !methodDefinition.Name.EndsWith("ServerRpc", StringComparison.OrdinalIgnoreCase))
+                    if (customAttributeType_FullName == CodeGenHelpers.ServerRpcAttribute_FullName)
                     {
-                        m_Diagnostics.AddError(methodDefinition, "ServerRpc method must end with 'ServerRpc' suffix!");
-                        isValid = false;
+                        var typeSystem = methodDefinition.Module.TypeSystem;
+                        var withLocalPrediction = false;
+                        foreach (var attrField in customAttribute.Fields)
+                        {
+                            switch (attrField.Name)
+                            {
+                                case k_ServerRpcAttribute_WithLocalPrediction:
+                                    withLocalPrediction = attrField.Argument.Type == typeSystem.Boolean && (bool)attrField.Argument.Value;
+                                    break;
+                            }
+                        }
+
+                        if (withLocalPrediction && !methodDefinition.Name.EndsWith("PredictedServerRpc", StringComparison.OrdinalIgnoreCase))
+                        {
+                            m_Diagnostics.AddError(methodDefinition, "A predicted ServerRpc method must end with 'PredictedServerRpc' suffix!");
+                            isValid = false;
+                        }
+                        else if (!methodDefinition.Name.EndsWith("ServerRpc", StringComparison.OrdinalIgnoreCase))
+                        {
+                            m_Diagnostics.AddError(methodDefinition, "ServerRpc method must end with 'ServerRpc' suffix!");
+                            isValid = false;
+                        }
+                        // END KEEPSAKE FIX
                     }
 
                     if (customAttributeType_FullName == CodeGenHelpers.ClientRpcAttribute_FullName &&
@@ -764,7 +947,10 @@ namespace Unity.Netcode.Editor.CodeGen
             var instructions = new List<Instruction>();
             var processor = methodDefinition.Body.GetILProcessor();
             var isServerRpc = rpcAttribute.AttributeType.FullName == CodeGenHelpers.ServerRpcAttribute_FullName;
+            // KEEPSAKE FIX - don't assume isServerRpc == false means isClientRpc == true (caused by now removed AuthorityRpc but keeping around)
+            var isClientRpc = rpcAttribute.AttributeType.FullName == CodeGenHelpers.ClientRpcAttribute_FullName;
             var requireOwnership = true; // default value MUST be == `ServerRpcAttribute.RequireOwnership`
+            var withLocalPrediction = false; // KEEPSAKE FIX
             var rpcDelivery = RpcDelivery.Reliable; // default value MUST be == `RpcAttribute.Delivery`
             foreach (var attrField in rpcAttribute.Fields)
             {
@@ -776,6 +962,10 @@ namespace Unity.Netcode.Editor.CodeGen
                     case k_ServerRpcAttribute_RequireOwnership:
                         requireOwnership = attrField.Argument.Type == typeSystem.Boolean && (bool)attrField.Argument.Value;
                         break;
+                    // KEEPSAKE FIX
+                    case k_ServerRpcAttribute_WithLocalPrediction:
+                        withLocalPrediction = attrField.Argument.Type == typeSystem.Boolean && (bool)attrField.Argument.Value;
+                        break;
                 }
             }
 
@@ -783,7 +973,7 @@ namespace Unity.Netcode.Editor.CodeGen
             var hasRpcParams =
                 paramCount > 0 &&
                 ((isServerRpc && methodDefinition.Parameters[paramCount - 1].ParameterType.FullName == CodeGenHelpers.ServerRpcParams_FullName) ||
-                 (!isServerRpc && methodDefinition.Parameters[paramCount - 1].ParameterType.FullName == CodeGenHelpers.ClientRpcParams_FullName));
+                 (isClientRpc && methodDefinition.Parameters[paramCount - 1].ParameterType.FullName == CodeGenHelpers.ClientRpcParams_FullName));
 
             methodDefinition.Body.InitLocals = true;
             // NetworkManager networkManager;
@@ -796,7 +986,16 @@ namespace Unity.Netcode.Editor.CodeGen
             // XXXRpcParams
             if (!hasRpcParams)
             {
-                methodDefinition.Body.Variables.Add(new VariableDefinition(isServerRpc ? m_ServerRpcParams_TypeRef : m_ClientRpcParams_TypeRef));
+                if (isServerRpc)
+                {
+                    methodDefinition.Body.Variables.Add(
+                        new VariableDefinition(m_ServerRpcParams_TypeRef));
+                }
+                else if (isClientRpc)
+                {
+                    methodDefinition.Body.Variables.Add(
+                        new VariableDefinition(m_ClientRpcParams_TypeRef));
+                }
             }
             int rpcParamsIdx = !hasRpcParams ? methodDefinition.Body.Variables.Count - 1 : -1;
 
@@ -833,7 +1032,17 @@ namespace Unity.Netcode.Editor.CodeGen
                 // if (__rpc_exec_stage != __RpcExecStage.Client) -> ClientRpc
                 instructions.Add(processor.Create(OpCodes.Ldarg_0));
                 instructions.Add(processor.Create(OpCodes.Ldfld, m_NetworkBehaviour_rpc_exec_stage_FieldRef));
-                instructions.Add(processor.Create(OpCodes.Ldc_I4, (int)(isServerRpc ? NetworkBehaviour.__RpcExecStage.Server : NetworkBehaviour.__RpcExecStage.Client)));
+                // KEEPSAKE FIX
+                var execStage = NetworkBehaviour.__RpcExecStage.None;
+                if (isServerRpc)
+                {
+                    execStage = NetworkBehaviour.__RpcExecStage.Server;
+                }
+                else if (isClientRpc)
+                {
+                    execStage = NetworkBehaviour.__RpcExecStage.Client;
+                }
+                instructions.Add(processor.Create(OpCodes.Ldc_I4, (int)execStage));
                 instructions.Add(processor.Create(OpCodes.Ceq));
                 instructions.Add(processor.Create(OpCodes.Ldc_I4, 0));
                 instructions.Add(processor.Create(OpCodes.Ceq));
@@ -908,7 +1117,7 @@ namespace Unity.Netcode.Editor.CodeGen
                     instructions.Add(processor.Create(OpCodes.Call, m_NetworkBehaviour_beginSendServerRpc_MethodRef));
                     instructions.Add(processor.Create(OpCodes.Stloc, bufWriterLocIdx));
                 }
-                else
+                else if (isClientRpc)
                 {
                     // ClientRpc
 
@@ -954,7 +1163,7 @@ namespace Unity.Netcode.Editor.CodeGen
                         {
                             m_Diagnostics.AddError(methodDefinition, $"{nameof(ServerRpcParams)} must be the last parameter in a ServerRpc.");
                         }
-                        if (!isServerRpc)
+                        if (isClientRpc)
                         {
                             m_Diagnostics.AddError($"ClientRpcs may not accept {nameof(ServerRpcParams)} as a parameter.");
                         }
@@ -1070,7 +1279,7 @@ namespace Unity.Netcode.Editor.CodeGen
                 {
                     // ServerRpc
 
-                    // __endSendServerRpc(ref bufferWriter, rpcMethodId, serverRpcParams, rpcDelivery);
+                    // __endSendServerRpc(ref bufferWriter, rpcMethodId, serverRpcParams, rpcDelivery, /* KEEPSAKE FIX */ withLocalPrediction);
                     instructions.Add(processor.Create(OpCodes.Ldarg_0));
 
                     // bufferWriter
@@ -1093,10 +1302,13 @@ namespace Unity.Netcode.Editor.CodeGen
                     // rpcDelivery
                     instructions.Add(processor.Create(OpCodes.Ldc_I4, (int)rpcDelivery));
 
+                    // KEEPSAKE FIX - withLocalPrediction
+                    instructions.Add(processor.Create( withLocalPrediction ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0));
+
                     // __endSendServerRpc
                     instructions.Add(processor.Create(OpCodes.Call, m_NetworkBehaviour_endSendServerRpc_MethodRef));
                 }
-                else
+                else if (isClientRpc)
                 {
                     // ClientRpc
 
@@ -1136,9 +1348,20 @@ namespace Unity.Netcode.Editor.CodeGen
 
                 // if (__rpc_exec_stage == __RpcExecStage.Server) -> ServerRpc
                 // if (__rpc_exec_stage == __RpcExecStage.Client) -> ClientRpc
+                // KEEPSAKE FIX
+                var execStage = NetworkBehaviour.__RpcExecStage.None;
+                if (isServerRpc)
+                {
+                    execStage = NetworkBehaviour.__RpcExecStage.Server;
+                }
+                else if (isClientRpc)
+                {
+                    execStage = NetworkBehaviour.__RpcExecStage.Client;
+                }
+
                 instructions.Add(processor.Create(OpCodes.Ldarg_0));
                 instructions.Add(processor.Create(OpCodes.Ldfld, m_NetworkBehaviour_rpc_exec_stage_FieldRef));
-                instructions.Add(processor.Create(OpCodes.Ldc_I4, (int)(isServerRpc ? NetworkBehaviour.__RpcExecStage.Server : NetworkBehaviour.__RpcExecStage.Client)));
+                instructions.Add(processor.Create(OpCodes.Ldc_I4, (int)execStage));
                 instructions.Add(processor.Create(OpCodes.Ceq));
                 instructions.Add(processor.Create(OpCodes.Brfalse, returnInstr));
 
@@ -1150,8 +1373,470 @@ namespace Unity.Netcode.Editor.CodeGen
                 instructions.Add(processor.Create(OpCodes.Ldloc, netManLocIdx));
                 instructions.Add(processor.Create(OpCodes.Callvirt, m_NetworkManager_getIsHost_MethodRef));
                 instructions.Add(processor.Create(OpCodes.Brtrue, lastInstr));
+                // KEEPSAKE FIX - local execution when predicting
+                if (isServerRpc && withLocalPrediction)
+                {
+                    instructions.Add(processor.Create(OpCodes.Br, lastInstr));
+                }
 
                 instructions.Add(returnInstr);
+                instructions.Add(lastInstr);
+            }
+
+            instructions.Reverse();
+            instructions.ForEach(instruction => processor.Body.Instructions.Insert(0, instruction));
+        }
+
+        // KEEPSAKE FIX
+        private void InjectWriteAndCallBlocks_INetworkRpcHandler(
+            MethodDefinition methodDefinition,
+            CustomAttribute rpcAttribute,
+            uint rpcMethodId)
+        {
+            // KEEPSAKE NOTE: Copy of InjectWriteAndCallbackBlocks, marked with KEEPSAKE FIX where diverge not only in name
+
+            var typeSystem = methodDefinition.Module.TypeSystem;
+            var instructions = new List<Instruction>();
+            var processor = methodDefinition.Body.GetILProcessor();
+            var isServerRpc = rpcAttribute.AttributeType.FullName == CodeGenHelpers.ServerRpcAttribute_FullName;
+            // KEEPSAKE FIX - don't assume isServerRpc == false means isClientRpc == true (caused by now removed AuthorityRpc but keeping around)
+            var isClientRpc = rpcAttribute.AttributeType.FullName == CodeGenHelpers.ClientRpcAttribute_FullName;
+            var requireOwnership = true; // default value MUST be == `ServerRpcAttribute.RequireOwnership`
+            var withLocalPrediction = false; // KEEPSAKE FIX
+            var rpcDelivery = RpcDelivery.Reliable; // default value MUST be == `RpcAttribute.Delivery`
+            foreach (var attrField in rpcAttribute.Fields)
+            {
+                switch (attrField.Name)
+                {
+                    case k_RpcAttribute_Delivery:
+                        rpcDelivery = (RpcDelivery)attrField.Argument.Value;
+                        break;
+                    case k_ServerRpcAttribute_RequireOwnership:
+                        requireOwnership = attrField.Argument.Type == typeSystem.Boolean && (bool)attrField.Argument.Value;
+                        break;
+                    // KEEPSAKE FIX
+                    case k_ServerRpcAttribute_WithLocalPrediction:
+                        withLocalPrediction = attrField.Argument.Type == typeSystem.Boolean && (bool)attrField.Argument.Value;
+                        break;
+                }
+            }
+
+            var paramCount = methodDefinition.Parameters.Count;
+            var hasRpcParams =
+                paramCount > 0 &&
+                ((isServerRpc && methodDefinition.Parameters[paramCount - 1].ParameterType.FullName == CodeGenHelpers.ServerRpcParams_FullName) ||
+                 (isClientRpc && methodDefinition.Parameters[paramCount - 1].ParameterType.FullName == CodeGenHelpers.ClientRpcParams_FullName));
+
+            methodDefinition.Body.InitLocals = true;
+            // NetworkManager networkManager;
+            methodDefinition.Body.Variables.Add(new VariableDefinition(m_NetworkManager_TypeRef));
+            int netManLocIdx = methodDefinition.Body.Variables.Count - 1;
+            // FastBufferWriter bufferWriter;
+            methodDefinition.Body.Variables.Add(new VariableDefinition(m_FastBufferWriter_TypeRef));
+            int bufWriterLocIdx = methodDefinition.Body.Variables.Count - 1;
+
+            // XXXRpcParams
+            if (!hasRpcParams)
+            {
+                if (isServerRpc)
+                {
+                    methodDefinition.Body.Variables.Add(
+                        new VariableDefinition(m_ServerRpcParams_TypeRef));
+                }
+                else if (isClientRpc)
+                {
+                    methodDefinition.Body.Variables.Add(
+                        new VariableDefinition(m_ClientRpcParams_TypeRef));
+                }
+            }
+            int rpcParamsIdx = !hasRpcParams ? methodDefinition.Body.Variables.Count - 1 : -1;
+
+            {
+                var logInstruction = processor.Create(OpCodes.Ldstr, $"Attempting to invoke {methodDefinition.Name} with no active {nameof(NetworkManager)} listening");
+                var lastInstr = processor.Create(OpCodes.Nop);
+
+                // networkManager = this.NetworkManager;
+                instructions.Add(processor.Create(OpCodes.Ldarg_0));
+                instructions.Add(processor.Create(OpCodes.Call, m_INetworkRpcHandler_getNetworkManager_MethodRef));
+                instructions.Add(processor.Create(OpCodes.Stloc, netManLocIdx));
+
+                // if (networkManager == null || !networkManager.IsListening) return;
+                instructions.Add(processor.Create(OpCodes.Ldloc, netManLocIdx));
+                instructions.Add(processor.Create(OpCodes.Brfalse, logInstruction));
+                instructions.Add(processor.Create(OpCodes.Ldloc, netManLocIdx));
+                instructions.Add(processor.Create(OpCodes.Callvirt, m_NetworkManager_getIsListening_MethodRef));
+                instructions.Add(processor.Create(OpCodes.Brtrue, lastInstr));
+
+                // Debug.LogError(...);
+                instructions.Add(logInstruction);
+                instructions.Add(processor.Create(OpCodes.Call, m_Debug_LogError_MethodRef));
+
+                instructions.Add(processor.Create(OpCodes.Ret));
+                instructions.Add(lastInstr);
+            }
+
+            {
+                var beginInstr = processor.Create(OpCodes.Nop);
+                var endInstr = processor.Create(OpCodes.Nop);
+                var lastInstr = processor.Create(OpCodes.Nop);
+
+                // if (this.__rpc_exec_stage != __RpcExecStage.Server) -> ServerRpc
+                // if (this.__rpc_exec_stage != __RpcExecStage.Client) -> ClientRpc
+                // KEEPSAKE FIX - get_rpc_exec is a property not a field in INetworkRpcHandler
+                instructions.Add(processor.Create(OpCodes.Ldarg_0));
+                instructions.Add(processor.Create(OpCodes.Callvirt, m_INetworkRpcHandler_get_rpc_exec_stage_MethodRef));
+                // KEEPSAKE FIX
+                var desiredExecStage = INetworkRpcHandler.__RpcExecStage.None;
+                if (isServerRpc)
+                {
+                    desiredExecStage = INetworkRpcHandler.__RpcExecStage.Server;
+                }
+                else if (isClientRpc)
+                {
+                    desiredExecStage = INetworkRpcHandler.__RpcExecStage.Client;
+                }
+                instructions.Add(processor.Create(OpCodes.Ldc_I4, (int)desiredExecStage));
+                instructions.Add(processor.Create(OpCodes.Ceq));
+                instructions.Add(processor.Create(OpCodes.Ldc_I4, 0));
+                instructions.Add(processor.Create(OpCodes.Ceq));
+                instructions.Add(processor.Create(OpCodes.Brfalse, lastInstr));
+
+                // if (networkManager.IsClient || networkManager.IsHost) { ... } -> ServerRpc
+                // if (networkManager.IsServer || networkManager.IsHost) { ... } -> ClientRpc
+                instructions.Add(processor.Create(OpCodes.Ldloc, netManLocIdx));
+                instructions.Add(processor.Create(OpCodes.Callvirt, isServerRpc ? m_NetworkManager_getIsClient_MethodRef : m_NetworkManager_getIsServer_MethodRef));
+                instructions.Add(processor.Create(OpCodes.Brtrue, beginInstr));
+                instructions.Add(processor.Create(OpCodes.Ldloc, netManLocIdx));
+                instructions.Add(processor.Create(OpCodes.Callvirt, m_NetworkManager_getIsHost_MethodRef));
+                instructions.Add(processor.Create(OpCodes.Brfalse, lastInstr));
+
+                instructions.Add(beginInstr);
+
+                // var bufferWriter = __beginSendServerRpc(rpcMethodId, serverRpcParams, rpcDelivery) -> ServerRpc
+                // var bufferWriter = __beginSendClientRpc(rpcMethodId, clientRpcParams, rpcDelivery) -> ClientRpc
+                if (isServerRpc)
+                {
+                    // ServerRpc
+
+                    if (requireOwnership)
+                    {
+                        var roReturnInstr = processor.Create(OpCodes.Ret);
+                        var roLastInstr = processor.Create(OpCodes.Nop);
+
+                        // if (this.OwnerClientId != networkManager.LocalClientId) { ... } return;
+                        instructions.Add(processor.Create(OpCodes.Ldarg_0));
+                        instructions.Add(processor.Create(OpCodes.Call, m_INetworkRpcHandler_getOwnerClientId_MethodRef));
+                        instructions.Add(processor.Create(OpCodes.Ldloc, netManLocIdx));
+                        instructions.Add(processor.Create(OpCodes.Callvirt, m_NetworkManager_getLocalClientId_MethodRef));
+                        instructions.Add(processor.Create(OpCodes.Ceq));
+                        instructions.Add(processor.Create(OpCodes.Ldc_I4, 0));
+                        instructions.Add(processor.Create(OpCodes.Ceq));
+                        instructions.Add(processor.Create(OpCodes.Brfalse, roLastInstr));
+
+                        var logNextInstr = processor.Create(OpCodes.Nop);
+
+                        // if (LogLevel.Normal > networkManager.LogLevel)
+                        instructions.Add(processor.Create(OpCodes.Ldloc, netManLocIdx));
+                        instructions.Add(processor.Create(OpCodes.Ldfld, m_NetworkManager_LogLevel_FieldRef));
+                        instructions.Add(processor.Create(OpCodes.Ldc_I4, (int)LogLevel.Normal));
+                        instructions.Add(processor.Create(OpCodes.Cgt));
+                        instructions.Add(processor.Create(OpCodes.Ldc_I4, 0));
+                        instructions.Add(processor.Create(OpCodes.Ceq));
+                        instructions.Add(processor.Create(OpCodes.Brfalse, logNextInstr));
+
+                        // Debug.LogError(...);
+                        instructions.Add(processor.Create(OpCodes.Ldstr, "Only the owner can invoke a ServerRpc that requires ownership!"));
+                        instructions.Add(processor.Create(OpCodes.Call, m_Debug_LogError_MethodRef));
+
+                        instructions.Add(logNextInstr);
+
+                        instructions.Add(roReturnInstr);
+                        instructions.Add(roLastInstr);
+                    }
+
+
+                    // var bufferWriter = __beginSendServerRpc(rpcMethodId, serverRpcParams, rpcDelivery);
+                    instructions.Add(processor.Create(OpCodes.Ldarg_0));
+
+                    // rpcMethodId
+                    instructions.Add(processor.Create(OpCodes.Ldc_I4, unchecked((int)rpcMethodId)));
+
+                    // rpcParams
+                    instructions.Add(hasRpcParams ? processor.Create(OpCodes.Ldarg, paramCount) : processor.Create(OpCodes.Ldloc, rpcParamsIdx));
+
+                    // rpcDelivery
+                    instructions.Add(processor.Create(OpCodes.Ldc_I4, (int)rpcDelivery));
+
+                    // __beginSendServerRpc
+                    instructions.Add(processor.Create(OpCodes.Call, m_INetworkRpcHandler_beginSendServerRpc_MethodRef));
+                    instructions.Add(processor.Create(OpCodes.Stloc, bufWriterLocIdx));
+                }
+                else if (isClientRpc)
+                {
+                    // ClientRpc
+
+                    // var bufferWriter = __beginSendClientRpc(rpcMethodId, clientRpcParams, rpcDelivery);
+                    instructions.Add(processor.Create(OpCodes.Ldarg_0));
+
+                    // rpcMethodId
+                    instructions.Add(processor.Create(OpCodes.Ldc_I4, unchecked((int)rpcMethodId)));
+
+                    // rpcParams
+                    instructions.Add(hasRpcParams ? processor.Create(OpCodes.Ldarg, paramCount) : processor.Create(OpCodes.Ldloc, rpcParamsIdx));
+
+                    // rpcDelivery
+                    instructions.Add(processor.Create(OpCodes.Ldc_I4, (int)rpcDelivery));
+
+                    // __beginSendClientRpc
+                    instructions.Add(processor.Create(OpCodes.Call, m_INetworkRpcHandler_beginSendClientRpc_MethodRef));
+                    instructions.Add(processor.Create(OpCodes.Stloc, bufWriterLocIdx));
+                }
+
+                // write method parameters into stream
+                for (int paramIndex = 0; paramIndex < paramCount; ++paramIndex)
+                {
+                    var paramDef = methodDefinition.Parameters[paramIndex];
+                    var paramType = paramDef.ParameterType;
+                    if (paramType.FullName == CodeGenHelpers.ClientRpcSendParams_FullName ||
+                        paramType.FullName == CodeGenHelpers.ClientRpcReceiveParams_FullName)
+                    {
+                        m_Diagnostics.AddError($"Rpcs may not accept {paramType.FullName} as a parameter. Use {nameof(ClientRpcParams)} instead.");
+                        continue;
+                    }
+
+                    if (paramType.FullName == CodeGenHelpers.ServerRpcSendParams_FullName ||
+                        paramType.FullName == CodeGenHelpers.ServerRpcReceiveParams_FullName)
+                    {
+                        m_Diagnostics.AddError($"Rpcs may not accept {paramType.FullName} as a parameter. Use {nameof(ServerRpcParams)} instead.");
+                        continue;
+                    }
+                    // ServerRpcParams
+                    if (paramType.FullName == CodeGenHelpers.ServerRpcParams_FullName)
+                    {
+                        if (paramIndex != paramCount - 1)
+                        {
+                            m_Diagnostics.AddError(methodDefinition, $"{nameof(ServerRpcParams)} must be the last parameter in a ServerRpc.");
+                        }
+                        if (isClientRpc)
+                        {
+                            m_Diagnostics.AddError($"ClientRpcs may not accept {nameof(ServerRpcParams)} as a parameter.");
+                        }
+                        continue;
+                    }
+                    // ClientRpcParams
+                    if (paramType.FullName == CodeGenHelpers.ClientRpcParams_FullName)
+                    {
+                        if (paramIndex != paramCount - 1)
+                        {
+                            m_Diagnostics.AddError(methodDefinition, $"{nameof(ClientRpcParams)} must be the last parameter in a ClientRpc.");
+                        }
+                        if (isServerRpc)
+                        {
+                            m_Diagnostics.AddError($"ServerRpcs may not accept {nameof(ClientRpcParams)} as a parameter.");
+                        }
+                        continue;
+                    }
+
+                    Instruction jumpInstruction = null;
+
+                    if (!paramType.IsValueType)
+                    {
+                        if (!GetWriteMethodForParameter(typeSystem.Boolean, out var boolMethodRef))
+                        {
+                            m_Diagnostics.AddError(methodDefinition, $"Couldn't find boolean serializer! Something's wrong!");
+                            return;
+                        }
+
+                        methodDefinition.Body.Variables.Add(new VariableDefinition(typeSystem.Boolean));
+                        int isSetLocalIndex = methodDefinition.Body.Variables.Count - 1;
+
+                        // bool isSet = (param != null);
+                        instructions.Add(processor.Create(OpCodes.Ldarg, paramIndex + 1));
+                        instructions.Add(processor.Create(OpCodes.Ldnull));
+                        instructions.Add(processor.Create(OpCodes.Cgt_Un));
+                        instructions.Add(processor.Create(OpCodes.Stloc, isSetLocalIndex));
+
+                        // bufferWriter.WriteValueSafe(isSet);
+                        instructions.Add(processor.Create(OpCodes.Ldloca, bufWriterLocIdx));
+                        instructions.Add(processor.Create(OpCodes.Ldloca, isSetLocalIndex));
+                        instructions.Add(processor.Create(OpCodes.Call, boolMethodRef));
+
+                        // if(isSet) {
+                        jumpInstruction = processor.Create(OpCodes.Nop);
+                        instructions.Add(processor.Create(OpCodes.Ldloc, isSetLocalIndex));
+                        instructions.Add(processor.Create(OpCodes.Brfalse, jumpInstruction));
+                    }
+
+                    var foundMethodRef = GetWriteMethodForParameter(paramType, out var methodRef);
+                    if (foundMethodRef)
+                    {
+                        // bufferWriter.WriteNetworkSerializable(param) for INetworkSerializable, OR
+                        // bufferWriter.WriteNetworkSerializable(param, -1, 0) for INetworkSerializable arrays, OR
+                        // bufferWriter.WriteValueSafe(param) for value types, OR
+                        // bufferWriter.WriteValueSafe(param, -1, 0) for arrays of value types, OR
+                        // bufferWriter.WriteValueSafe(param, false) for strings
+                        var method = methodRef.Resolve();
+                        var checkParameter = method.Parameters[0];
+                        var isExtensionMethod = false;
+                        if (methodRef.Resolve().DeclaringType != m_FastBufferWriter_TypeRef.Resolve())
+                        {
+                            isExtensionMethod = true;
+                            checkParameter = method.Parameters[1];
+                        }
+                        if (!isExtensionMethod || method.Parameters[0].ParameterType.IsByReference)
+                        {
+                            instructions.Add(processor.Create(OpCodes.Ldloca, bufWriterLocIdx));
+                        }
+                        else
+                        {
+                            instructions.Add(processor.Create(OpCodes.Ldloc, bufWriterLocIdx));
+                        }
+                        if (checkParameter.IsIn || checkParameter.IsOut || checkParameter.ParameterType.IsByReference)
+                        {
+                            instructions.Add(processor.Create(OpCodes.Ldarga, paramIndex + 1));
+                        }
+                        else
+                        {
+                            instructions.Add(processor.Create(OpCodes.Ldarg, paramIndex + 1));
+                        }
+                        // Special handling for WriteValue() on arrays and strings since they have additional arguments.
+                        if (paramType.IsArray && ((!isExtensionMethod && methodRef.Parameters.Count == 3) ||
+                            (isExtensionMethod && methodRef.Parameters.Count == 4)))
+                        {
+                            instructions.Add(processor.Create(OpCodes.Ldc_I4_M1));
+                            instructions.Add(processor.Create(OpCodes.Ldc_I4_0));
+                        }
+                        else if (paramType == typeSystem.String && ((!isExtensionMethod && methodRef.Parameters.Count == 2) ||
+                            (isExtensionMethod && methodRef.Parameters.Count == 3)))
+                        {
+                            instructions.Add(processor.Create(OpCodes.Ldc_I4_0));
+                        }
+                        instructions.Add(processor.Create(OpCodes.Call, methodRef));
+                    }
+                    else
+                    {
+                        m_Diagnostics.AddError(methodDefinition, $"Don't know how to serialize {paramType.Name} - implement {nameof(INetworkSerializable)} or add an extension method for {nameof(FastBufferWriter)}.{k_WriteValueMethodName} to define serialization.");
+                        continue;
+                    }
+
+                    if (jumpInstruction != null)
+                    {
+                        instructions.Add(jumpInstruction);
+                    }
+                }
+
+                instructions.Add(endInstr);
+
+                // __endSendServerRpc(ref bufferWriter, rpcMethodId, serverRpcParams, rpcDelivery) -> ServerRpc
+                // __endSendClientRpc(ref bufferWriter, rpcMethodId, clientRpcParams, rpcDelivery) -> ClientRpc
+                if (isServerRpc)
+                {
+                    // ServerRpc
+
+                    // KEEPSAKE FIX - added withLocalPrediction
+                    // __endSendServerRpc(ref bufferWriter, rpcMethodId, serverRpcParams, rpcDelivery, withLocalPrediction);
+                    instructions.Add(processor.Create(OpCodes.Ldarg_0));
+
+                    // bufferWriter
+                    instructions.Add(processor.Create(OpCodes.Ldloca, bufWriterLocIdx));
+
+                    // rpcMethodId
+                    instructions.Add(processor.Create(OpCodes.Ldc_I4, unchecked((int)rpcMethodId)));
+
+                    if (hasRpcParams)
+                    {
+                        // rpcParams
+                        instructions.Add(processor.Create(OpCodes.Ldarg, paramCount));
+                    }
+                    else
+                    {
+                        // default
+                        instructions.Add(processor.Create(OpCodes.Ldloc, rpcParamsIdx));
+                    }
+
+                    // rpcDelivery
+                    instructions.Add(processor.Create(OpCodes.Ldc_I4, (int)rpcDelivery));
+
+                    // KEEPSAKE FIX - withLocalPrediction
+                    instructions.Add(processor.Create( withLocalPrediction ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0));
+
+                    // __endSendServerRpc
+                    instructions.Add(processor.Create(OpCodes.Call, m_INetworkRpcHandler_endSendServerRpc_MethodRef));
+                }
+                else if (isClientRpc)
+                {
+                    // ClientRpc
+
+                    // __endSendClientRpc(ref bufferWriter, rpcMethodId, clientRpcParams, rpcDelivery);
+                    instructions.Add(processor.Create(OpCodes.Ldarg_0));
+
+                    // bufferWriter
+                    instructions.Add(processor.Create(OpCodes.Ldloca, bufWriterLocIdx));
+
+                    // rpcMethodId
+                    instructions.Add(processor.Create(OpCodes.Ldc_I4, unchecked((int)rpcMethodId)));
+
+                    if (hasRpcParams)
+                    {
+                        // rpcParams
+                        instructions.Add(processor.Create(OpCodes.Ldarg, paramCount));
+                    }
+                    else
+                    {
+                        // default
+                        instructions.Add(processor.Create(OpCodes.Ldloc, rpcParamsIdx));
+                    }
+
+                    // rpcDelivery
+                    instructions.Add(processor.Create(OpCodes.Ldc_I4, (int)rpcDelivery));
+
+                    // __endSendClientRpc
+                    instructions.Add(processor.Create(OpCodes.Call, m_INetworkRpcHandler_endSendClientRpc_MethodRef));
+                }
+
+                instructions.Add(lastInstr);
+            }
+
+            {
+                var returnInstr = processor.Create(OpCodes.Ret);
+                var lastInstr = processor.Create(OpCodes.Nop);
+
+                // if (__rpc_exec_stage == __RpcExecStage.Server) -> ServerRpc
+                // if (__rpc_exec_stage == __RpcExecStage.Client) -> ClientRpc
+                // KEEPSAKE FIX
+                var execStage = INetworkRpcHandler.__RpcExecStage.None;
+                if (isServerRpc)
+                {
+                    execStage = INetworkRpcHandler.__RpcExecStage.Server;
+                }
+                else if (isClientRpc)
+                {
+                    execStage = INetworkRpcHandler.__RpcExecStage.Client;
+                }
+                instructions.Add(processor.Create(OpCodes.Ldarg_0));
+                // KEEPSAKE FIX - rpc_exec_stage is a prop on INetworkRpcHandler
+                instructions.Add(processor.Create(OpCodes.Callvirt, m_INetworkRpcHandler_get_rpc_exec_stage_MethodRef));
+                instructions.Add(processor.Create(OpCodes.Ldc_I4, (int)execStage));
+                instructions.Add(processor.Create(OpCodes.Ceq));
+
+                instructions.Add(processor.Create(OpCodes.Brfalse, returnInstr));
+
+                // if (networkManager.IsServer || networkManager.IsHost) -> ServerRpc
+                // if (networkManager.IsClient || networkManager.IsHost) -> ClientRpc
+                instructions.Add(processor.Create(OpCodes.Ldloc, netManLocIdx));
+                instructions.Add(processor.Create(OpCodes.Callvirt, isServerRpc ? m_NetworkManager_getIsServer_MethodRef : m_NetworkManager_getIsClient_MethodRef));
+                instructions.Add(processor.Create(OpCodes.Brtrue, lastInstr));
+                instructions.Add(processor.Create(OpCodes.Ldloc, netManLocIdx));
+                instructions.Add(processor.Create(OpCodes.Callvirt, m_NetworkManager_getIsHost_MethodRef));
+                instructions.Add(processor.Create(OpCodes.Brtrue, lastInstr));
+                // KEEPSAKE FIX - local execution when predicting
+                if (isServerRpc && withLocalPrediction)
+                {
+                    instructions.Add(processor.Create(OpCodes.Br, lastInstr));
+                }
+
+                instructions.Add(returnInstr);
+
                 instructions.Add(lastInstr);
             }
 
@@ -1177,6 +1862,7 @@ namespace Unity.Netcode.Editor.CodeGen
             processor.Append(tryStart);
 
             var isServerRpc = rpcAttribute.AttributeType.FullName == CodeGenHelpers.ServerRpcAttribute_FullName;
+            var isClientRpc = rpcAttribute.AttributeType.FullName == CodeGenHelpers.ClientRpcAttribute_FullName;
             var requireOwnership = true; // default value MUST be = `ServerRpcAttribute.RequireOwnership`
             foreach (var attrField in rpcAttribute.Fields)
             {
@@ -1348,8 +2034,19 @@ namespace Unity.Netcode.Editor.CodeGen
 
             // NetworkBehaviour.__rpc_exec_stage = __RpcExecStage.Server; -> ServerRpc
             // NetworkBehaviour.__rpc_exec_stage = __RpcExecStage.Client; -> ClientRpc
+            // KEEPSAKE FIX
+            var execStage = NetworkBehaviour.__RpcExecStage.None;
+            if (isServerRpc)
+            {
+                execStage = NetworkBehaviour.__RpcExecStage.Server;
+            }
+            else if (isClientRpc)
+            {
+                execStage = NetworkBehaviour.__RpcExecStage.Client;
+            }
+
             processor.Emit(OpCodes.Ldarg_0);
-            processor.Emit(OpCodes.Ldc_I4, (int)(isServerRpc ? NetworkBehaviour.__RpcExecStage.Server : NetworkBehaviour.__RpcExecStage.Client));
+            processor.Emit(OpCodes.Ldc_I4, (int)execStage);
             processor.Emit(OpCodes.Stfld, m_NetworkBehaviour_rpc_exec_stage_FieldRef);
 
             // NetworkBehaviour.XXXRpc(...);
@@ -1362,6 +2059,230 @@ namespace Unity.Netcode.Editor.CodeGen
             processor.Emit(OpCodes.Ldarg_0);
             processor.Emit(OpCodes.Ldc_I4, (int)NetworkBehaviour.__RpcExecStage.None);
             processor.Emit(OpCodes.Stfld, m_NetworkBehaviour_rpc_exec_stage_FieldRef);
+
+            processor.Emit(OpCodes.Ret);
+            return nhandler;
+        }
+
+        // KEEPSAKE FIX
+        private MethodDefinition GenerateStaticHandler_INetworkRpcHandler(MethodDefinition methodDefinition, CustomAttribute rpcAttribute)
+        {
+            // KEEPSAKE NOTE: Copy of GenerateStaticHandler, marked with KEEPSAKE FIX where diverge more than just name
+
+            var typeSystem = methodDefinition.Module.TypeSystem;
+            var nhandler = new MethodDefinition(
+                $"{methodDefinition.Name}__nhandler",
+                MethodAttributes.Private | MethodAttributes.Static | MethodAttributes.HideBySig,
+                methodDefinition.Module.TypeSystem.Void);
+            nhandler.Parameters.Add(new ParameterDefinition("target", ParameterAttributes.None, m_INetworkRpcHandler_TypeRef));
+            nhandler.Parameters.Add(new ParameterDefinition("reader", ParameterAttributes.None, m_FastBufferReader_TypeRef));
+            nhandler.Parameters.Add(new ParameterDefinition("rpcParams", ParameterAttributes.None, m_RpcParams_TypeRef));
+
+            var processor = nhandler.Body.GetILProcessor();
+
+            // begin Try/Catch
+            var tryStart = processor.Create(OpCodes.Nop);
+            processor.Append(tryStart);
+
+            var isServerRpc = rpcAttribute.AttributeType.FullName == CodeGenHelpers.ServerRpcAttribute_FullName;
+            var isClientRpc = rpcAttribute.AttributeType.FullName == CodeGenHelpers.ClientRpcAttribute_FullName;
+            var requireOwnership = true; // default value MUST be = `ServerRpcAttribute.RequireOwnership`
+            foreach (var attrField in rpcAttribute.Fields)
+            {
+                switch (attrField.Name)
+                {
+                    case k_ServerRpcAttribute_RequireOwnership:
+                        requireOwnership = attrField.Argument.Type == typeSystem.Boolean && (bool)attrField.Argument.Value;
+                        break;
+                }
+            }
+
+            nhandler.Body.InitLocals = true;
+            // NetworkManager networkManager;
+            nhandler.Body.Variables.Add(new VariableDefinition(m_NetworkManager_TypeRef));
+            int netManLocIdx = nhandler.Body.Variables.Count - 1;
+
+            {
+                var returnInstr = processor.Create(OpCodes.Ret);
+                var lastInstr = processor.Create(OpCodes.Nop);
+
+                // networkManager = this.NetworkManager;
+                processor.Emit(OpCodes.Ldarg_0);
+                processor.Emit(OpCodes.Call, m_INetworkRpcHandler_getNetworkManager_MethodRef);
+                processor.Emit(OpCodes.Stloc, netManLocIdx);
+
+                // if (networkManager == null || !networkManager.IsListening) return;
+                processor.Emit(OpCodes.Ldloc, netManLocIdx);
+                processor.Emit(OpCodes.Brfalse, returnInstr);
+                processor.Emit(OpCodes.Ldloc, netManLocIdx);
+                processor.Emit(OpCodes.Callvirt, m_NetworkManager_getIsListening_MethodRef);
+                processor.Emit(OpCodes.Brtrue, lastInstr);
+
+                processor.Append(returnInstr);
+                processor.Append(lastInstr);
+            }
+
+            if (isServerRpc && requireOwnership)
+            {
+                var roReturnInstr = processor.Create(OpCodes.Ret);
+                var roLastInstr = processor.Create(OpCodes.Nop);
+
+                // if (rpcParams.Server.Receive.SenderClientId != target.OwnerClientId) { ... } return;
+                processor.Emit(OpCodes.Ldarg_2);
+                processor.Emit(OpCodes.Ldfld, m_RpcParams_Server_FieldRef);
+                processor.Emit(OpCodes.Ldfld, m_ServerRpcParams_Receive_FieldRef);
+                processor.Emit(OpCodes.Ldfld, m_ServerRpcParams_Receive_SenderClientId_FieldRef);
+                processor.Emit(OpCodes.Ldarg_0);
+                processor.Emit(OpCodes.Call, m_INetworkRpcHandler_getOwnerClientId_MethodRef);
+                processor.Emit(OpCodes.Ceq);
+                processor.Emit(OpCodes.Ldc_I4, 0);
+                processor.Emit(OpCodes.Ceq);
+                processor.Emit(OpCodes.Brfalse, roLastInstr);
+
+                var logNextInstr = processor.Create(OpCodes.Nop);
+
+                // if (LogLevel.Normal > networkManager.LogLevel)
+                processor.Emit(OpCodes.Ldloc, netManLocIdx);
+                processor.Emit(OpCodes.Ldfld, m_NetworkManager_LogLevel_FieldRef);
+                processor.Emit(OpCodes.Ldc_I4, (int)LogLevel.Normal);
+                processor.Emit(OpCodes.Cgt);
+                processor.Emit(OpCodes.Ldc_I4, 0);
+                processor.Emit(OpCodes.Ceq);
+                processor.Emit(OpCodes.Brfalse, logNextInstr);
+
+                // Debug.LogError(...);
+                processor.Emit(OpCodes.Ldstr, "Only the owner can invoke a ServerRpc that requires ownership!");
+                processor.Emit(OpCodes.Call, m_Debug_LogError_MethodRef);
+
+                processor.Append(logNextInstr);
+
+                processor.Append(roReturnInstr);
+                processor.Append(roLastInstr);
+            }
+
+            // read method parameters from stream
+            int paramCount = methodDefinition.Parameters.Count;
+            int[] paramLocalMap = new int[paramCount];
+            for (int paramIndex = 0; paramIndex < paramCount; ++paramIndex)
+            {
+                var paramDef = methodDefinition.Parameters[paramIndex];
+                var paramType = paramDef.ParameterType;
+
+                // local variable
+                nhandler.Body.Variables.Add(new VariableDefinition(paramType));
+                int localIndex = nhandler.Body.Variables.Count - 1;
+                paramLocalMap[paramIndex] = localIndex;
+
+                // ServerRpcParams, ClientRpcParams
+                {
+                    // ServerRpcParams
+                    if (paramType.FullName == CodeGenHelpers.ServerRpcParams_FullName)
+                    {
+                        processor.Emit(OpCodes.Ldarg_2);
+                        processor.Emit(OpCodes.Ldfld, m_RpcParams_Server_FieldRef);
+                        processor.Emit(OpCodes.Stloc, localIndex);
+                        continue;
+                    }
+
+                    // ClientRpcParams
+                    if (paramType.FullName == CodeGenHelpers.ClientRpcParams_FullName)
+                    {
+                        processor.Emit(OpCodes.Ldarg_2);
+                        processor.Emit(OpCodes.Ldfld, m_RpcParams_Client_FieldRef);
+                        processor.Emit(OpCodes.Stloc, localIndex);
+                        continue;
+                    }
+                }
+
+                Instruction jumpInstruction = null;
+
+                if (!paramType.IsValueType)
+                {
+                    if (!GetReadMethodForParameter(typeSystem.Boolean, out var boolMethodRef))
+                    {
+                        m_Diagnostics.AddError(methodDefinition, $"Couldn't find boolean deserializer! Something's wrong!");
+                    }
+
+                    // reader.ReadValueSafe(out bool isSet)
+                    nhandler.Body.Variables.Add(new VariableDefinition(typeSystem.Boolean));
+                    int isSetLocalIndex = nhandler.Body.Variables.Count - 1;
+                    processor.Emit(OpCodes.Ldarga, 1);
+                    processor.Emit(OpCodes.Ldloca, isSetLocalIndex);
+                    processor.Emit(OpCodes.Call, boolMethodRef);
+
+                    // paramType param = null;
+                    processor.Emit(OpCodes.Ldnull);
+                    processor.Emit(OpCodes.Stloc, localIndex);
+
+                    // if(isSet) {
+                    jumpInstruction = processor.Create(OpCodes.Nop);
+                    processor.Emit(OpCodes.Ldloc, isSetLocalIndex);
+                    processor.Emit(OpCodes.Brfalse, jumpInstruction);
+                }
+
+                var foundMethodRef = GetReadMethodForParameter(paramType, out var methodRef);
+                if (foundMethodRef)
+                {
+                    // reader.ReadValueSafe(out localVar);
+
+                    var checkParameter = methodRef.Resolve().Parameters[0];
+
+                    var isExtensionMethod = methodRef.Resolve().DeclaringType != m_FastBufferReader_TypeRef.Resolve();
+                    if (!isExtensionMethod || checkParameter.ParameterType.IsByReference)
+                    {
+                        processor.Emit(OpCodes.Ldarga, 1);
+                    }
+                    else
+                    {
+                        processor.Emit(OpCodes.Ldarg, 1);
+                    }
+                    processor.Emit(OpCodes.Ldloca, localIndex);
+                    if (paramType == typeSystem.String)
+                    {
+                        processor.Emit(OpCodes.Ldc_I4_0);
+                    }
+                    processor.Emit(OpCodes.Call, methodRef);
+                }
+                else
+                {
+                    m_Diagnostics.AddError(methodDefinition, $"Don't know how to deserialize {paramType.Name} - implement {nameof(INetworkSerializable)} or add an extension method for {nameof(FastBufferReader)}.{k_ReadValueMethodName} to define serialization.");
+                    continue;
+                }
+
+                if (jumpInstruction != null)
+                {
+                    processor.Append(jumpInstruction);
+                }
+            }
+
+            // INetworkRpcHandler.__rpc_exec_stage = __RpcExecStage.Server; -> ServerRpc
+            // INetworkRpcHandler.__rpc_exec_stage = __RpcExecStage.Client; -> ClientRpc
+            // KEEPSAKE FIX
+            var execStage = INetworkRpcHandler.__RpcExecStage.None;
+            if (isServerRpc)
+            {
+                execStage = INetworkRpcHandler.__RpcExecStage.Server;
+            }
+            else if (isClientRpc)
+            {
+                execStage = INetworkRpcHandler.__RpcExecStage.Client;
+            }
+            processor.Emit(OpCodes.Ldarg_0);
+            processor.Emit(OpCodes.Ldc_I4, (int)execStage);
+            // KEEPSAKE FIX - rpc_exec_state prop on INetworkRpcHandler
+            processor.Emit(OpCodes.Callvirt, m_INetworkRpcHandler_set_rpc_exec_stage_MethodRef);
+
+            // INetworkRpcHandler.XXXRpc(...);
+            processor.Emit(OpCodes.Ldarg_0);
+            processor.Emit(OpCodes.Castclass, methodDefinition.DeclaringType);
+            Enumerable.Range(0, paramCount).ToList().ForEach(paramIndex => processor.Emit(OpCodes.Ldloc, paramLocalMap[paramIndex]));
+            processor.Emit(OpCodes.Callvirt, methodDefinition);
+
+            // INetworkRpcHandler.__rpc_exec_stage = __RpcExecStage.None;
+            processor.Emit(OpCodes.Ldarg_0);
+            processor.Emit(OpCodes.Ldc_I4, (int)INetworkRpcHandler.__RpcExecStage.None);
+            // KEEPSAKE FIX - rpc_exec_state prop on INetworkRpcHandler
+            processor.Emit(OpCodes.Callvirt, m_INetworkRpcHandler_set_rpc_exec_stage_MethodRef);
 
             processor.Emit(OpCodes.Ret);
             return nhandler;

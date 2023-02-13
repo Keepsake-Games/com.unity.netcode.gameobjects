@@ -117,7 +117,8 @@ namespace Unity.Netcode
         {
             var networkManager = (NetworkManager)context.SystemOwner;
 
-            if (networkManager.SpawnManager.SpawnedObjects.TryGetValue(NetworkObjectId, out NetworkObject networkObject))
+            // KEEPSAKE FIX - find objects in Attached instead of Spawned collection
+            if (networkManager.SpawnManager.AttachedObjects.TryGetValue(NetworkObjectId, out NetworkObject networkObject))
             {
                 NetworkBehaviour behaviour = networkObject.GetNetworkBehaviourAtOrderIndex(NetworkBehaviourIndex);
 

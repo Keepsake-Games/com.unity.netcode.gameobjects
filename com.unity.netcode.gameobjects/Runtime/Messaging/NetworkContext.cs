@@ -3,7 +3,8 @@ namespace Unity.Netcode
     /// <summary>
     /// Metadata passed into the Receive handler for <see cref="INetworkMessage"/>.
     /// </summary>
-    internal ref struct NetworkContext
+    // KEEPSAKE FIX - make public
+    public ref struct NetworkContext
     {
         /// <summary>
         /// An opaque object used to represent the owner of the MessagingSystem that's receiving the message.
@@ -15,6 +16,12 @@ namespace Unity.Netcode
         /// The originator of the message
         /// </summary>
         public ulong SenderId;
+
+        // KEEPSAKE FIX
+        /// <summary>
+        /// Is this a local prediction of the RPC?
+        /// </summary>
+        public bool IsPredicting;
 
         /// <summary>
         /// The timestamp at which the message was received

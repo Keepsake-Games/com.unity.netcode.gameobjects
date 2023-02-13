@@ -373,6 +373,12 @@ namespace Unity.Netcode.Components
 
         private void ResetInterpolatedStateToCurrentAuthoritativeState()
         {
+            // KEEPSAKE FIX - we might start deactivated and not yet called Awake
+            if (m_AllFloatInterpolators.Count == 0)
+            {
+                return;
+            }
+
             var serverTime = NetworkManager.ServerTime.Time;
             m_PositionXInterpolator.ResetTo(m_LocalAuthoritativeNetworkState.PositionX, serverTime);
             m_PositionYInterpolator.ResetTo(m_LocalAuthoritativeNetworkState.PositionY, serverTime);
@@ -504,6 +510,12 @@ namespace Unity.Netcode.Components
 
         private void ApplyInterpolatedNetworkStateToTransform(NetworkTransformState networkState, Transform transformToUpdate)
         {
+            // KEEPSAKE FIX - we might start deactivated and not yet called Awake
+            if (m_AllFloatInterpolators.Count == 0)
+            {
+                return;
+            }
+
             m_PrevNetworkState = networkState;
 
             var interpolatedPosition = InLocalSpace ? transformToUpdate.localPosition : transformToUpdate.position;
@@ -606,6 +618,12 @@ namespace Unity.Netcode.Components
 
         private void AddInterpolatedState(NetworkTransformState newState)
         {
+            // KEEPSAKE FIX - we might start deactivated and not yet called Awake
+            if (m_AllFloatInterpolators.Count == 0)
+            {
+                return;
+            }
+
             var sentTime = newState.SentTime;
 
             if (newState.HasPositionX)
@@ -643,7 +661,8 @@ namespace Unity.Netcode.Components
 
         private void OnNetworkStateChanged(NetworkTransformState oldState, NetworkTransformState newState)
         {
-            if (!NetworkObject.IsSpawned)
+            // KEEPSAKE FIX - check IsAttached and not IsSpawned
+            if (!NetworkObject.IsAttached)
             {
                 // todo MTT-849 should never happen but yet it does! maybe revisit/dig after NetVar updates and snapshot system lands?
                 return;
@@ -689,9 +708,23 @@ namespace Unity.Netcode.Components
                 m_AllFloatInterpolators.Add(m_ScaleYInterpolator);
                 m_AllFloatInterpolators.Add(m_ScaleZInterpolator);
             }
+
+            // KEEPSAKE FIX in case OnNetworkSpawn has been called before awake (inactive GO) we setup initial state here
+            //              m_Transform is set by OnNetworkSpawn so we use that as "has OnNetworkSpawn been invoked"
+            if (m_Transform != null)
+            {
+                if (CanCommitToTransform)
+                {
+                    TryCommitTransformToServer(m_Transform, m_CachedNetworkManager.LocalTime.Time);
+                }
+
+                Initialize();
+            }
+            // KEEPSAKE FIX
         }
 
-        public override void OnNetworkSpawn()
+        // KEEPSAKE FIX - hooked to OnNetworkAttach instead of OnNetworkSpawn
+        public override void OnNetworkAttach()
         {
             // must set up m_Transform in OnNetworkSpawn because it's possible an object spawns but is disabled
             //  and thus awake won't be called.
@@ -708,6 +741,11 @@ namespace Unity.Netcode.Components
                 TryCommitTransformToServer(m_Transform, m_CachedNetworkManager.LocalTime.Time);
             }
             m_LocalAuthoritativeNetworkState = m_ReplicatedNetworkState.Value;
+
+            // KEEPSAKE FIX - set current transform state as truth. If we got spawned from by message from server we'll be at the correct place and NetworkTransform
+            //                won't sync again until dirty so we shouldn't reset to all 0s since we have a "last known truth" in our current position (where we were spawned)
+            ApplyTransformToNetworkState(ref m_LocalAuthoritativeNetworkState, m_CachedNetworkManager.LocalTime.Time, transform);
+            // END KEEPSAKE FIX
 
             // crucial we do this to reset the interpolators so that recycled objects when using a pool will
             //  not have leftover interpolator state from the previous object

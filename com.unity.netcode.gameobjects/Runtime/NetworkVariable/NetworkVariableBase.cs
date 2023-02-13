@@ -1,4 +1,5 @@
 using System;
+using UniRx;
 
 namespace Unity.Netcode
 {
@@ -12,11 +13,16 @@ namespace Unity.Netcode
         /// </summary>
         internal const NetworkDelivery Delivery = NetworkDelivery.ReliableFragmentedSequenced;
 
-        private protected NetworkBehaviour m_NetworkBehaviour;
+        // KEEPSAKE FIX made protected internal so we can access it within Netcode
+        protected internal NetworkBehaviour m_NetworkBehaviour;
+
+        // KEEPSAKE FIX we want to know if net var is fully setup or not before certain validations kick in
+        public bool IsInitialized { get; private set; }
 
         public void Initialize(NetworkBehaviour networkBehaviour)
         {
             m_NetworkBehaviour = networkBehaviour;
+            IsInitialized = true;
         }
 
         protected NetworkVariableBase(NetworkVariableReadPermission readPermIn = NetworkVariableReadPermission.Everyone)
@@ -32,12 +38,37 @@ namespace Unity.Netcode
         /// Gets or sets the name of the network variable's instance
         /// (MemberInfo) where it was declared.
         /// </summary>
-        public string Name { get; internal set; }
+        // KEEPSAKE FIX - made public
+        public string Name { get; set; }
 
         /// <summary>
         /// The read permission for this var
         /// </summary>
         public readonly NetworkVariableReadPermission ReadPerm;
+
+        // KEEPSAKE FIX
+        /// <summary>
+        /// When true the server will accept modifications of netvar as part of snapshots from owning client
+        /// </summary>
+        public bool OwnerHasAuthority;
+
+        // KEEPSAKE FIX
+        /// <summary>
+        /// The amount of seconds that must pass between this variable being included in snapshots, no matter if dirty or not.
+        /// </summary>
+        public float MinSendDelay;
+
+        // KEEPSAKE FIX
+        /// <summary>
+        /// Don't write until this tick, even if dirty. Based on MinSendDelay above and the prev tick it was written.
+        /// </summary>
+        public int MinNextTickWrite;
+
+        // KEEPSAKE FIX - observable IsDirty so that NetworkBehaviour doesn't have to poll
+        public IObservable<bool> WhenDirty => m_IsDirtySubject.DistinctUntilChanged();
+
+        protected readonly BehaviorSubject<bool> m_IsDirtySubject = new(false); // BehaviorSubject so that DistinctUntilChanged gets primed with current value
+        // END KEEPSAKE FIX
 
         /// <summary>
         /// Sets whether or not the variable needs to be delta synced
@@ -45,6 +76,9 @@ namespace Unity.Netcode
         public virtual void SetDirty(bool isDirty)
         {
             m_IsDirty = isDirty;
+
+            // KEEPSAKE FIX - observable IsDirty (important to use IsDirty(), not m_IsDirty, to respect subclass impl)
+            m_IsDirtySubject.OnNext(IsDirty());
         }
 
         /// <summary>
@@ -53,6 +87,9 @@ namespace Unity.Netcode
         public virtual void ResetDirty()
         {
             m_IsDirty = false;
+
+            // KEEPSAKE FIX - observable IsDirty (important to use IsDirty(), not m_IsDirty, to respect subclass impl)
+            m_IsDirtySubject.OnNext(IsDirty());
         }
 
         /// <summary>
@@ -114,6 +151,7 @@ namespace Unity.Netcode
 
         public virtual void Dispose()
         {
+            IsInitialized = false;
         }
     }
 }

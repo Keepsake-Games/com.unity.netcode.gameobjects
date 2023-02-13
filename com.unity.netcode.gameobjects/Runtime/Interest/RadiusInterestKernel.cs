@@ -16,6 +16,14 @@ namespace Unity.Netcode
             Radius = radius;
         }
 
+        public void OnObjectAdded(NetworkObject obj)
+        {
+        }
+
+        public void OnObjectRemoved(NetworkObject obj)
+        {
+        }
+
         public bool QueryFor(NetworkObject clientNetworkObject, NetworkObject obj)
         {
             return Vector3.Distance(obj.transform.position, clientNetworkObject.gameObject.transform.position) <= Radius;

@@ -23,6 +23,7 @@ namespace Unity.Netcode
         public void Handle(ref NetworkContext context)
         {
             var networkManager = (NetworkManager)context.SystemOwner;
+            // KEEPSAKE NOTE - we let it still be Spawned objects here since we don't handle lifetime of those in Attached but not in Spawned
             if (!networkManager.SpawnManager.SpawnedObjects.TryGetValue(NetworkObjectId, out var networkObject))
             {
                 // This is the same check and log message that happens inside OnDespawnObject, but we have to do it here

@@ -1,7 +1,11 @@
 using System.Collections.Generic;
 using System;
 using System.Linq;
+using System.Text;
+using Cysharp.Threading.Tasks;
+using Keepsake.Common;
 using UnityEngine;
+using UnityEngine.Pool;
 using UnityEngine.SceneManagement;
 
 
@@ -711,14 +715,35 @@ namespace Unity.Netcode
         /// <returns></returns>
         internal NetworkObject GetSceneRelativeInSceneNetworkObject(uint globalObjectIdHash)
         {
-            if (ScenePlacedObjects.ContainsKey(globalObjectIdHash))
+            // KEEPSAKE FIX - use TryGetValue to not iterate as much
+            if (ScenePlacedObjects.TryGetValue(globalObjectIdHash, out var objectInstances))
             {
-                if (ScenePlacedObjects[globalObjectIdHash].ContainsKey(SceneBeingSynchronized.handle))
+                // KEEPSAKE FIX - We're not currently using scene management of Netcode, though we are using SceneObjects
+                // so for us SceneBeingSynchronized is null and in that case just pick the first match for the Global ID
+                if (!SceneBeingSynchronized.IsValid())
                 {
-                    var inScenePlacedNetworkObject = ScenePlacedObjects[globalObjectIdHash][SceneBeingSynchronized.handle];
+                    if (objectInstances.Count > 1)
+                    {
+                        var sb = new StringBuilder();
+                        foreach (var kvp in objectInstances)
+                        {
+                            sb.AppendLine($"- {kvp.Value.gameObject.Path(true)}");
+                        }
+                        throw new Exception(
+                            $"Found {nameof(NetworkObject)} with {nameof(NetworkObject.GlobalObjectIdHash)} {globalObjectIdHash} in multiple places (see below), either scene has invalid global ids on its instances, or the same scene is loaded multiple times which isn't currently supported.\n{sb}");
+                    }
 
+                    foreach (var kvp in objectInstances)
+                    {
+                        return kvp.Value;
+                    }
+                }
+                // END KEEPSAKE FIX
+
+                if (objectInstances.TryGetValue(SceneBeingSynchronized.handle, out var inScenePlacedNetworkObject))
+                {
                     // We can only have 1 duplicated globalObjectIdHash per scene instance, so remove it once it has been returned
-                    ScenePlacedObjects[globalObjectIdHash].Remove(SceneBeingSynchronized.handle);
+                    objectInstances.Remove(SceneBeingSynchronized.handle);
 
                     return inScenePlacedNetworkObject;
                 }
@@ -1261,7 +1286,7 @@ namespace Unity.Netcode
                     throw new Exception($"Server Scene Handle ({sceneEventData.SceneHandle}) already exist!  Happened during scene load of {nextScene.name} with Client Handle ({nextScene.handle})");
                 }
 
-                OnClientLoadedScene(sceneEventId, nextScene);
+                OnClientLoadedSceneAsync(sceneEventId, nextScene).Forget();
             }
         }
 
@@ -1269,69 +1294,86 @@ namespace Unity.Netcode
         /// Server side:
         /// On scene loaded callback method invoked by OnSceneLoading only
         /// </summary>
-        private void OnServerLoadedScene(uint sceneEventId, Scene scene)
+        /// KEEPSAKE FIX - made public and added notifyClients flag so we can call it for the SpawnNetworkObjectLocally invocation
+        ///                but not wanting to tell any clients, since we still do our own scene tracking
+        public void OnServerLoadedScene(uint sceneEventId, Scene scene, bool notifyClients = true)
         {
-            var sceneEventData = SceneEventDataStore[sceneEventId];
+            SceneEventData sceneEventData = default;
+            if (notifyClients)
+            {
+                sceneEventData = SceneEventDataStore[sceneEventId];
+            }
+
             // Register in-scene placed NetworkObjects with spawn manager
             foreach (var keyValuePairByGlobalObjectIdHash in ScenePlacedObjects)
             {
                 foreach (var keyValuePairBySceneHandle in keyValuePairByGlobalObjectIdHash.Value)
                 {
-                    if (!keyValuePairBySceneHandle.Value.IsPlayerObject)
+                    // KEEPSAKE FIX - check that is in the scene we just loaded to not register old objects
+                    if (keyValuePairBySceneHandle.Value.gameObject.scene == scene && !keyValuePairBySceneHandle.Value.IsPlayerObject)
                     {
                         m_NetworkManager.SpawnManager.SpawnNetworkObjectLocally(keyValuePairBySceneHandle.Value, m_NetworkManager.SpawnManager.GetNetworkObjectId(), true, false, null, true);
                     }
                 }
             }
 
-            // Set the server's scene's handle so the client can build a look up table
-            sceneEventData.SceneHandle = scene.handle;
-
-            // Send all clients the scene load event
-            for (int j = 0; j < m_NetworkManager.ConnectedClientsList.Count; j++)
+            if (notifyClients)
             {
-                var clientId = m_NetworkManager.ConnectedClientsList[j].ClientId;
-                if (clientId != m_NetworkManager.ServerClientId)
+
+                // Set the server's scene's handle so the client can build a look up table
+                sceneEventData.SceneHandle = scene.handle;
+
+                // Send all clients the scene load event
+                for (int j = 0; j < m_NetworkManager.ConnectedClientsList.Count; j++)
                 {
-                    sceneEventData.TargetClientId = clientId;
-                    var message = new SceneEventMessage
+                    var clientId = m_NetworkManager.ConnectedClientsList[j].ClientId;
+                    if (clientId != m_NetworkManager.ServerClientId)
                     {
-                        EventData = sceneEventData
-                    };
-                    var size = m_NetworkManager.SendMessage(ref message, k_DeliveryType, clientId);
-                    m_NetworkManager.NetworkMetrics.TrackSceneEventSent(clientId, (uint)sceneEventData.SceneEventType, scene.name, size);
+                        sceneEventData.TargetClientId = clientId;
+                        var message = new SceneEventMessage { EventData = sceneEventData };
+                        var size = m_NetworkManager.SendMessage(ref message, k_DeliveryType, clientId);
+                        m_NetworkManager.NetworkMetrics.TrackSceneEventSent(
+                            clientId,
+                            (uint)sceneEventData.SceneEventType,
+                            scene.name,
+                            size);
+                    }
                 }
+
+                m_IsSceneEventActive = false;
+                //First, notify local server that the scene was loaded
+                OnSceneEvent?.Invoke(
+                    new SceneEvent()
+                    {
+                        SceneEventType = SceneEventType.LoadComplete,
+                        LoadSceneMode = sceneEventData.LoadSceneMode,
+                        SceneName = SceneNameFromHash(sceneEventData.SceneHash),
+                        ClientId = m_NetworkManager.ServerClientId,
+                        Scene = scene,
+                    });
+
+                OnLoadComplete?.Invoke(
+                    m_NetworkManager.ServerClientId,
+                    SceneNameFromHash(sceneEventData.SceneHash),
+                    sceneEventData.LoadSceneMode);
+
+                //Second, only if we are a host do we want register having loaded for the associated SceneEventProgress
+                if (SceneEventProgressTracking.ContainsKey(sceneEventData.SceneEventProgressId) && m_NetworkManager.IsHost)
+                {
+                    SceneEventProgressTracking[sceneEventData.SceneEventProgressId].AddClientAsDone(m_NetworkManager.ServerClientId);
+                }
+                EndSceneEvent(sceneEventId);
             }
-
-            m_IsSceneEventActive = false;
-            //First, notify local server that the scene was loaded
-            OnSceneEvent?.Invoke(new SceneEvent()
-            {
-                SceneEventType = SceneEventType.LoadComplete,
-                LoadSceneMode = sceneEventData.LoadSceneMode,
-                SceneName = SceneNameFromHash(sceneEventData.SceneHash),
-                ClientId = m_NetworkManager.ServerClientId,
-                Scene = scene,
-            });
-
-            OnLoadComplete?.Invoke(m_NetworkManager.ServerClientId, SceneNameFromHash(sceneEventData.SceneHash), sceneEventData.LoadSceneMode);
-
-            //Second, only if we are a host do we want register having loaded for the associated SceneEventProgress
-            if (SceneEventProgressTracking.ContainsKey(sceneEventData.SceneEventProgressId) && m_NetworkManager.IsHost)
-            {
-                SceneEventProgressTracking[sceneEventData.SceneEventProgressId].AddClientAsDone(m_NetworkManager.ServerClientId);
-            }
-            EndSceneEvent(sceneEventId);
         }
 
         /// <summary>
         /// Client side:
         /// On scene loaded callback method invoked by OnSceneLoading only
         /// </summary>
-        private void OnClientLoadedScene(uint sceneEventId, Scene scene)
+        private async UniTask OnClientLoadedSceneAsync(uint sceneEventId, Scene scene)
         {
             var sceneEventData = SceneEventDataStore[sceneEventId];
-            sceneEventData.DeserializeScenePlacedObjects();
+            await sceneEventData.DeserializeScenePlacedObjectsAsync();
 
             sceneEventData.SceneEventType = SceneEventType.LoadComplete;
             SendSceneEventData(sceneEventId, new ulong[] { m_NetworkManager.ServerClientId });
@@ -1565,7 +1607,7 @@ namespace Unity.Netcode
             OnLoadComplete?.Invoke(m_NetworkManager.LocalClientId, sceneName, loadSceneMode);
 
             // Check to see if we still have scenes to load and synchronize with
-            HandleClientSceneEvent(sceneEventId);
+            HandleClientSceneEventAsync(sceneEventId).Forget();
         }
 
         /// <summary>
@@ -1573,7 +1615,7 @@ namespace Unity.Netcode
         /// Handles incoming Scene_Event messages for clients
         /// </summary>
         /// <param name="stream">data associated with the event</param>
-        private void HandleClientSceneEvent(uint sceneEventId)
+        private async UniTask HandleClientSceneEventAsync(uint sceneEventId)
         {
             var sceneEventData = SceneEventDataStore[sceneEventId];
             switch (sceneEventData.SceneEventType)
@@ -1599,7 +1641,7 @@ namespace Unity.Netcode
                             // Include anything in the DDOL scene
                             PopulateScenePlacedObjects(DontDestroyOnLoadScene, false);
                             // Synchronize the NetworkObjects for this scene
-                            sceneEventData.SynchronizeSceneNetworkObjects(m_NetworkManager);
+                            await sceneEventData.SynchronizeSceneNetworkObjectsAsync(m_NetworkManager);
 
                             sceneEventData.SceneEventType = SceneEventType.SynchronizeComplete;
                             SendSceneEventData(sceneEventId, new ulong[] { m_NetworkManager.ServerClientId });
@@ -1779,7 +1821,7 @@ namespace Unity.Netcode
 
                 if (sceneEventData.IsSceneEventClientSide())
                 {
-                    HandleClientSceneEvent(sceneEventData.SceneEventId);
+                    HandleClientSceneEventAsync(sceneEventData.SceneEventId).Forget();
                 }
                 else
                 {
@@ -1827,42 +1869,79 @@ namespace Unity.Netcode
         /// Using the local scene relative Scene.handle as a sub-key to the root dictionary allows us to
         /// distinguish between duplicate in-scene placed NetworkObjects
         /// </summary>
-        private void PopulateScenePlacedObjects(Scene sceneToFilterBy, bool clearScenePlacedObjects = true)
+        /// KEEPSAKE FIX - made public
+        public void PopulateScenePlacedObjects(Scene sceneToFilterBy, bool clearScenePlacedObjects = true)
         {
             if (clearScenePlacedObjects)
             {
                 ScenePlacedObjects.Clear();
             }
 
-            var networkObjects = UnityEngine.Object.FindObjectsOfType<NetworkObject>();
-
-            // Just add every NetworkObject found that isn't already in the list
-            // With additive scenes, we can have multiple in-scene placed NetworkObjects with the same GlobalObjectIdHash value
-            // During Client Side Synchronization: We add them on a FIFO basis, for each scene loaded without clearing, and then
-            // at the end of scene loading we use this list to soft synchronize all in-scene placed NetworkObjects
-            foreach (var networkObjectInstance in networkObjects)
+            // KEEPSAKE FIX - iterate the loaded scene rather than using FindObjectsOfType<NetworkObject>
+            foreach (var rootGo in sceneToFilterBy.GetRootGameObjects())
             {
-                // We check to make sure the NetworkManager instance is the same one to be "MultiInstanceHelpers" compatible and filter the list on a per scene basis (additive scenes)
-                if (networkObjectInstance.IsSceneObject == null && networkObjectInstance.NetworkManager == m_NetworkManager && networkObjectInstance.gameObject.scene == sceneToFilterBy &&
-                    networkObjectInstance.gameObject.scene.handle == sceneToFilterBy.handle)
+                foreach (var networkObjectInstance in rootGo.GetComponentsInChildren<NetworkObject>(true))
                 {
-                    if (!ScenePlacedObjects.ContainsKey(networkObjectInstance.GlobalObjectIdHash))
+                    // We check to make sure the NetworkManager instance is the same one to be "MultiInstanceHelpers" compatible and filter the list on a per scene basis (additive scenes)
+                    if (networkObjectInstance.IsSceneObject == null
+                        && networkObjectInstance.NetworkManager == m_NetworkManager
+                        && networkObjectInstance.gameObject.scene == sceneToFilterBy
+                        && networkObjectInstance.gameObject.scene.handle == sceneToFilterBy.handle)
                     {
-                        ScenePlacedObjects.Add(networkObjectInstance.GlobalObjectIdHash, new Dictionary<int, NetworkObject>());
-                    }
+                        if (!ScenePlacedObjects.ContainsKey(networkObjectInstance.GlobalObjectIdHash))
+                        {
+                            ScenePlacedObjects.Add(networkObjectInstance.GlobalObjectIdHash, new Dictionary<int, NetworkObject>());
+                        }
+                        // KEEPSAKE FIX
+                        else
+                        {
+                            throw new Exception(
+                                $"Cannot register scene placed {nameof(NetworkObject)} {networkObjectInstance.gameObject.Path(true)} with {nameof(networkObjectInstance.GlobalObjectIdHash)} {networkObjectInstance.GlobalObjectIdHash}, that hash is already registered! Either the hash is not generated properly (try opening the scene and regenerating the id on the NetworkObject component in question)"
+                                + $", or the same scene ({networkObjectInstance.gameObject.scene.name}) is additively loaded multiple time which we currently do not support!");
+                        }
+                        // END KEEPSAKE FIX
 
-                    if (!ScenePlacedObjects[networkObjectInstance.GlobalObjectIdHash].ContainsKey(networkObjectInstance.gameObject.scene.handle))
-                    {
-                        ScenePlacedObjects[networkObjectInstance.GlobalObjectIdHash].Add(networkObjectInstance.gameObject.scene.handle, networkObjectInstance);
-                    }
-                    else
-                    {
-                        var exitingEntryName = ScenePlacedObjects[networkObjectInstance.GlobalObjectIdHash][networkObjectInstance.gameObject.scene.handle] != null ?
-                            ScenePlacedObjects[networkObjectInstance.GlobalObjectIdHash][networkObjectInstance.gameObject.scene.handle].name : "Null Entry";
-                        throw new Exception($"{networkObjectInstance.name} tried to registered with {nameof(ScenePlacedObjects)} which already contains " +
-                            $"the same {nameof(NetworkObject.GlobalObjectIdHash)} value {networkObjectInstance.GlobalObjectIdHash} for {exitingEntryName}!");
+                        if (!ScenePlacedObjects[networkObjectInstance.GlobalObjectIdHash]
+                                .ContainsKey(networkObjectInstance.gameObject.scene.handle))
+                        {
+                            ScenePlacedObjects[networkObjectInstance.GlobalObjectIdHash].Add(
+                                networkObjectInstance.gameObject.scene.handle,
+                                networkObjectInstance);
+                        }
+                        else
+                        {
+                            var exitingEntryName
+                                = ScenePlacedObjects[networkObjectInstance.GlobalObjectIdHash][
+                                    networkObjectInstance.gameObject.scene.handle]
+                                != null
+                                    ? ScenePlacedObjects[networkObjectInstance.GlobalObjectIdHash][networkObjectInstance.gameObject.scene
+                                        .handle].name
+                                    : "Null Entry";
+                            throw new Exception(
+                                $"{networkObjectInstance.gameObject.Path(true)} tried to register with {nameof(ScenePlacedObjects)} which already contains "
+                                + $"the same {nameof(NetworkObject.GlobalObjectIdHash)} value {networkObjectInstance.GlobalObjectIdHash} for {exitingEntryName}!");
+                        }
                     }
                 }
+            }
+        }
+
+        // KEEPSAKE FIX - added this so we can keep list a bit clean
+        public void ClearScenePlacedObjects(Scene scene)
+        {
+            using var _ = ListPool<uint>.Get(out var globalIdsToClear);
+            foreach (var globalIdInScenes in ScenePlacedObjects)
+            {
+                globalIdInScenes.Value.Remove(scene.handle);
+                if (globalIdInScenes.Value.Count == 0)
+                {
+                    globalIdsToClear.Add(globalIdInScenes.Key);
+                }
+            }
+
+            foreach (var id in globalIdsToClear)
+            {
+                ScenePlacedObjects.Remove(id);
             }
         }
 

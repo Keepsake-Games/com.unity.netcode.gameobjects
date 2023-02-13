@@ -32,6 +32,8 @@ namespace Unity.Netcode.Editor
         private SerializedProperty m_EnsureNetworkVariableLengthSafetyProperty;
         private SerializedProperty m_ForceSamePrefabsProperty;
         private SerializedProperty m_EnableSceneManagementProperty;
+        private SerializedProperty m_SyncAllNetworkObjectsInConnectionApprovedMessageProperty;
+        private SerializedProperty m_SyncPlayerObjectsInConnectionApprovedMessageProperty;
         private SerializedProperty m_RecycleNetworkIdsProperty;
         private SerializedProperty m_NetworkIdRecycleDelayProperty;
         private SerializedProperty m_RpcHashSizeProperty;
@@ -53,6 +55,10 @@ namespace Unity.Netcode.Editor
 
             foreach (var assembly in assemblies)
             {
+                // KEEPSAKE FIX - can't GetTypes from these..
+                if (assembly.FullName.StartsWith("Microsoft.CodeAnalysis"))
+                    continue;
+
                 var types = assembly.GetTypes();
 
                 foreach (var type in types)
@@ -98,6 +104,8 @@ namespace Unity.Netcode.Editor
             m_EnsureNetworkVariableLengthSafetyProperty = m_NetworkConfigProperty.FindPropertyRelative("EnsureNetworkVariableLengthSafety");
             m_ForceSamePrefabsProperty = m_NetworkConfigProperty.FindPropertyRelative("ForceSamePrefabs");
             m_EnableSceneManagementProperty = m_NetworkConfigProperty.FindPropertyRelative("EnableSceneManagement");
+            m_SyncAllNetworkObjectsInConnectionApprovedMessageProperty = m_NetworkConfigProperty.FindPropertyRelative("SyncAllNetworkObjectsInConnectionApprovedMessage");
+            m_SyncPlayerObjectsInConnectionApprovedMessageProperty = m_NetworkConfigProperty.FindPropertyRelative("SyncPlayerObjectsInConnectionApprovedMessage");
             m_RecycleNetworkIdsProperty = m_NetworkConfigProperty.FindPropertyRelative("RecycleNetworkIds");
             m_NetworkIdRecycleDelayProperty = m_NetworkConfigProperty.FindPropertyRelative("NetworkIdRecycleDelay");
             m_RpcHashSizeProperty = m_NetworkConfigProperty.FindPropertyRelative("RpcHashSize");
@@ -124,6 +132,8 @@ namespace Unity.Netcode.Editor
             m_EnsureNetworkVariableLengthSafetyProperty = m_NetworkConfigProperty.FindPropertyRelative("EnsureNetworkVariableLengthSafety");
             m_ForceSamePrefabsProperty = m_NetworkConfigProperty.FindPropertyRelative("ForceSamePrefabs");
             m_EnableSceneManagementProperty = m_NetworkConfigProperty.FindPropertyRelative("EnableSceneManagement");
+            m_SyncAllNetworkObjectsInConnectionApprovedMessageProperty = m_NetworkConfigProperty.FindPropertyRelative("SyncAllNetworkObjectsInConnectionApprovedMessage");
+            m_SyncPlayerObjectsInConnectionApprovedMessageProperty = m_NetworkConfigProperty.FindPropertyRelative("SyncPlayerObjectsInConnectionApprovedMessage");
             m_RecycleNetworkIdsProperty = m_NetworkConfigProperty.FindPropertyRelative("RecycleNetworkIds");
             m_NetworkIdRecycleDelayProperty = m_NetworkConfigProperty.FindPropertyRelative("NetworkIdRecycleDelay");
             m_RpcHashSizeProperty = m_NetworkConfigProperty.FindPropertyRelative("RpcHashSize");
@@ -288,6 +298,8 @@ namespace Unity.Netcode.Editor
 
                 EditorGUILayout.LabelField("Scene Management", EditorStyles.boldLabel);
                 EditorGUILayout.PropertyField(m_EnableSceneManagementProperty);
+                EditorGUILayout.PropertyField(m_SyncAllNetworkObjectsInConnectionApprovedMessageProperty);
+                EditorGUILayout.PropertyField(m_SyncPlayerObjectsInConnectionApprovedMessageProperty);
 
                 using (new EditorGUI.DisabledScope(!m_NetworkManager.NetworkConfig.EnableSceneManagement))
                 {

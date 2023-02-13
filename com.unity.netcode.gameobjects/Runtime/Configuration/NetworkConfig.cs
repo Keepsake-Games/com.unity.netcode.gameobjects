@@ -33,15 +33,17 @@ namespace Unity.Netcode
         /// <summary>
         /// A list of prefabs that can be dynamically spawned.
         /// </summary>
+        // KEEPSAKE FIX - made public
         [SerializeField]
         [Tooltip("The prefabs that can be spawned across the network")]
-        internal List<NetworkPrefab> NetworkPrefabs = new List<NetworkPrefab>();
+        public List<NetworkPrefab> NetworkPrefabs = new List<NetworkPrefab>();
 
         /// <summary>
         /// This dictionary provides a quick way to check and see if a NetworkPrefab has a NetworkPrefab override.
         /// Generated at runtime and OnValidate
         /// </summary>
-        internal Dictionary<uint, NetworkPrefab> NetworkPrefabOverrideLinks = new Dictionary<uint, NetworkPrefab>();
+        // KEEPSAKE FIX - made public
+        public Dictionary<uint, NetworkPrefab> NetworkPrefabOverrideLinks = new Dictionary<uint, NetworkPrefab>();
 
         internal Dictionary<uint, uint> OverrideToNetworkPrefab = new Dictionary<uint, uint>();
 
@@ -96,6 +98,20 @@ namespace Unity.Netcode
                  "SoftSynced scene objects wont work with this disabled. That means that disabling SceneManagement also enables PrefabSync.")]
         public bool EnableSceneManagement = true;
 
+        // KEEPSAKE FIX
+        /// <summary>
+        /// Should spawned NetworkObjects be sent along connection approval to connecting client. If so client will spawn them before considering itself fully connected.
+        /// Default Unity Netcode behaviour is to assume this is true when EnableSceneManagement is false.
+        /// </summary>
+        public bool SyncAllNetworkObjectsInConnectionApprovedMessage = true;
+
+        /// <summary>
+        /// Should spawned player objects be sent along connection approval to connecting client. If so client will spawn them before considering itself fully connected.
+        /// This setting is ignored if SyncAllNetworkObjectsInConnectionApprovedMessage is true.
+        /// </summary>
+        public bool SyncPlayerObjectsInConnectionApprovedMessage = true;
+        // END KEEPSAKE FIX
+
         /// <summary>
         /// Whether or not the netcode should check for differences in the prefabs at connection.
         /// If you dynamically add prefabs at runtime, turn this OFF
@@ -140,6 +156,7 @@ namespace Unity.Netcode
 
         /// <summary>
         /// Whether or not to enable Snapshot System for variable updates. Not supported in this version.
+        /// KEEPSAKE FIX: Supported by us :scream:
         /// </summary>
         public bool UseSnapshotDelta { get; internal set; } = true;
 

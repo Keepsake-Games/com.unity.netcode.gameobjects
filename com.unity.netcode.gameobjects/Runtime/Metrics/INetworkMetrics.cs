@@ -1,14 +1,22 @@
 using System.Collections.Generic;
+using Unity.Multiplayer.Tools.NetStats;
 
 namespace Unity.Netcode
 {
-    internal interface INetworkMetrics
+    // KEEPSAKE - Made public
+    public interface INetworkMetrics
     {
+        IMetricDispatcher Dispatcher { get; }
+
         void SetConnectionId(ulong connectionId);
 
         void TrackTransportBytesSent(long bytesCount);
 
         void TrackTransportBytesReceived(long bytesCount);
+
+        // KEEPSAKE FIX
+        void TrackRtt(float rtt);
+        // END KEEPSAKE FIX
 
         void TrackNetworkMessageSent(ulong receivedClientId, string messageType, long bytesCount);
 

@@ -1,9 +1,12 @@
 using System.Collections.Generic;
+using Unity.Multiplayer.Tools.NetStats;
 
 namespace Unity.Netcode
 {
     internal class NullNetworkMetrics : INetworkMetrics
     {
+        public IMetricDispatcher Dispatcher { get; }
+
         public void SetConnectionId(ulong connectionId)
         {
         }
@@ -13,6 +16,10 @@ namespace Unity.Netcode
         }
 
         public void TrackTransportBytesReceived(long bytesCount)
+        {
+        }
+
+        public void TrackRtt(float rtt)
         {
         }
 
