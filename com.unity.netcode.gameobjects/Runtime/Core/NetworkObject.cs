@@ -1756,12 +1756,13 @@ public sealed class NetworkObject : MonoBehaviour
 
         var globalId = GlobalObjectId.GetGlobalObjectIdSlow(networkObject);
 
-        if (globalId.targetPrefabId == 0)
+        if (globalId.identifierType == 1)
         {
-            // We are not the root, so we expect targetPrefabId to be set (the ID of the nested prefab we're a part of).
-            // This has been seen to happen when Unity is starting up and loading the previously loaded scene, runs OnValidate on the *assets* that scene contains (maybe reasonable)
+            // type 1 == "Imported Asset"
+            // We don't like this type, it has been seen when Unity is starting up and loading the previously loaded scene, runs OnValidate on the *assets* that scene contains (maybe reasonable)
             // but the File ID part of `globalId` will be the File ID of the *instance* in the *scene* and not of the nested prefab in the asset (which `this` refers to).
-            // This is very weird and we can't create a stable hash from it, so give up and assume we will recalculate at some point after load where things don't go wrong.
+            // The result is that the *asset* on disk will get a new global id hash based on the instance in the scene, which is not good since we want these to be stable.
+            // We just exit out here and assume a nice "type 2" (Scene Object) ID will come along at some point.
             globalIdHash = default;
             return false;
         }
