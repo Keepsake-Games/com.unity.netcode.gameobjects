@@ -9,6 +9,7 @@ using UniRx.Observers;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Assertions;
+using UnityEngine.Pool;
 
 namespace Unity.Netcode
 {
@@ -35,8 +36,8 @@ public abstract class NetworkBehaviour : MonoBehaviour
     // KEEPSAKE FIX - observable IsDirty
     private readonly List<IDisposable> NetworkVariableDirtySubscriptions = new();
 
-    internal readonly List<int>    NetworkVariableIndexesToReset    = new();
-    internal readonly HashSet<int> NetworkVariableIndexesToResetSet = new();
+    // KEEPSAKE FIX - track this on a per-client basis
+    internal readonly Dictionary<ulong, List<int>> NetworkVariableIndexesToReset    = new();
 
     #pragma warning disable IDE1006 // disable naming rule violation check
     [NonSerialized]
@@ -89,7 +90,7 @@ public abstract class NetworkBehaviour : MonoBehaviour
     private bool IsRunning => NetworkManager && NetworkManager.IsListening;
 
     // KEEPSAKE FIX - observable IsDirty
-    private int m_DirtyVariableCount;
+    private readonly List<(ulong, int)> m_DirtyVariablesForClientCount = new();
 
     /// <summary>
     ///     Gets Whether or not the object has a owner
@@ -104,7 +105,7 @@ public abstract class NetworkBehaviour : MonoBehaviour
     public bool IsSpawned => HasNetworkObject ? NetworkObject.IsAttached : false;
 
     // KEEPSAKE FIX - we want to differentiate between sets from the layer itself or sets by the user
-    public bool IsInternalVariableWrite { get; internal set; }
+    public bool IsInternalVariableWrite { get; protected internal set; }
 
     /// <summary>
     ///     Gets the NetworkObject that owns this NetworkBehaviour instance
@@ -565,7 +566,8 @@ public abstract class NetworkBehaviour : MonoBehaviour
                     throw new Exception($"{GetType().FullName}.{sortedFields[i].Name} cannot be null. All {nameof(NetworkVariableBase)} instances must be initialized.");
                 }
 
-                instance.Initialize(this);
+                // KEEPSAKE FIX - replaced Initialize with StartInitialize
+                instance.StartInitialize(this).Dispose();
 
                 var instanceNameProperty = fieldType.GetProperty(nameof(NetworkVariableBase.Name));
                 var sanitizedVariableName = sortedFields[i].Name.Replace("<", string.Empty).Replace(">k__BackingField", string.Empty);
@@ -603,11 +605,11 @@ public abstract class NetworkBehaviour : MonoBehaviour
 
     protected void StartObservingDirty(NetworkVariableBase netVar)
     {
-        // We .Skip(1) to avoid getting a callback from the Subscribe and instead check if IsDirty to start out with a count of +1
-        NetworkVariableDirtySubscriptions.Add(netVar.WhenDirty.Skip(1).SubscribeWithState(netVar, OnVariableDirty));
-        if (netVar.IsDirty())
+        // note: the "ForClient" observable doesn't emit a value on subscribe so no Skip
+        NetworkVariableDirtySubscriptions.Add(netVar.WhenDirtyForClient.SubscribeWithState(netVar, OnVariableDirtyForClient));
+        foreach (var clientId in netVar.DirtyForClients())
         {
-            OnVariableDirty(true, netVar);
+            OnVariableDirtyForClient((true, clientId), netVar);
         }
     }
 
@@ -633,31 +635,67 @@ public abstract class NetworkBehaviour : MonoBehaviour
         m_VarInitWhileInactive = false;
     }
 
-    // KEEPSAKE FIX - Observable IsDirty
-    protected void OnVariableDirty(bool isDirty, NetworkVariableBase networkVariableBase)
+    private void OnVariableDirtyForClient((bool, ulong) isDirtyAndClientId, NetworkVariableBase networkVariableBase)
     {
-        m_DirtyVariableCount += isDirty ? 1 : -1;
+        (var isDirty, var clientId) = isDirtyAndClientId;
+        for (var index = 0; index < m_DirtyVariablesForClientCount.Count; index++)
+        {
+            var clientAndCount = m_DirtyVariablesForClientCount[index];
+            if (clientAndCount.Item1 == clientId)
+            {
+                clientAndCount.Item2 += isDirty ? 1 : -1;
+
+                if (clientAndCount.Item2 == 0)
+                {
+                    m_DirtyVariablesForClientCount.RemoveAt(index);
+                }
+                else
+                {
+                    m_DirtyVariablesForClientCount[index] = clientAndCount;
+                }
+
+                //Debug.Log($"IsDirty per client -- {GetType().Name} on {gameObject} -- count for {clientId} is now {clientAndCount.Item2}");
+                return;
+            }
+        }
+
+        if (isDirty)
+        {
+            //Debug.Log($"IsDirty per client -- {GetType().Name} on {gameObject} -- count for {clientId} is now 1");
+            m_DirtyVariablesForClientCount.Add((clientId, 1));
+        }
     }
 
-    internal void PreNetworkVariableWrite()
+    private void PreNetworkVariableWrite(ulong clientId)
     {
         // reset our "which variables got written" data
-        NetworkVariableIndexesToReset.Clear();
-        NetworkVariableIndexesToResetSet.Clear();
+        // KEEPSAKE FIX - clear only for the provided client, to support our per-client dirty flags and not nuking "other clients'" status
+        //                since PreNetworkVariableWrite is run for every client, whereas PostNetwork.. is only run once after the client loop
+        if (NetworkVariableIndexesToReset.TryGetValue(clientId, out var toReset))
+        {
+            ListPool<int>.Release(toReset);
+            NetworkVariableIndexesToReset.Remove(clientId);
+        }
     }
 
     internal void PostNetworkVariableWrite()
     {
         // mark any variables we wrote as no longer dirty
-        for (var i = 0; i < NetworkVariableIndexesToReset.Count; i++)
+        // KEEPSAKE FIX - tracking on per-client level
+        foreach ((var clientId, var toReset) in NetworkVariableIndexesToReset)
         {
-            var networkVariableField = NetworkVariableFields[NetworkVariableIndexesToReset[i]];
-            networkVariableField.ResetDirty();
+            foreach (var variableId in toReset)
+            {
+                var networkVariableField = NetworkVariableFields[variableId];
+                networkVariableField.ResetDirty(clientId);
 
-            // KEEPSAKE FIX - track when we're allowed to send based on min delay
-            var currentTick = NetworkManager.NetworkTickSystem.LocalTime.Tick;
-            var nextTickToAllowSend = currentTick + Mathf.CeilToInt(networkVariableField.MinSendDelay * NetworkManager.NetworkTickSystem.LocalTime.TickRate);
-            networkVariableField.MinNextTickWrite = nextTickToAllowSend;
+                // KEEPSAKE FIX - track when we're allowed to send based on min delay
+                // KEEPSAKE TODO - sigh, should be do this on a per-client basis now since we've changed dirty flag? :weary:
+                var currentTick = NetworkManager.NetworkTickSystem.LocalTime.Tick;
+                var nextTickToAllowSend = currentTick
+                    + Mathf.CeilToInt(networkVariableField.MinSendDelay * NetworkManager.NetworkTickSystem.LocalTime.TickRate);
+                networkVariableField.MinNextTickWrite = nextTickToAllowSend;
+            }
         }
     }
 
@@ -668,7 +706,7 @@ public abstract class NetworkBehaviour : MonoBehaviour
             InitializeVariables();
         }
 
-        PreNetworkVariableWrite();
+        PreNetworkVariableWrite(clientId);
         // KEEPSAKE FIX - get behaviour ID from raw field to avoid property, this is a hot path
         var behaviourId = m_NetworkObject.GetNetworkBehaviourOrderIndex(this);
         NetworkVariableUpdate(clientId, behaviourId);
@@ -676,7 +714,7 @@ public abstract class NetworkBehaviour : MonoBehaviour
 
     private void NetworkVariableUpdate(ulong clientId, ushort behaviourIndex)
     {
-        if (!CouldHaveDirtyNetworkVariables())
+        if (!CouldHaveDirtyNetworkVariables(clientId))
         {
             return;
         }
@@ -686,21 +724,44 @@ public abstract class NetworkBehaviour : MonoBehaviour
             for (var k = 0; k < NetworkVariableFields.Count; k++)
             {
                 var networkVariableField = NetworkVariableFields[k];
+
+                if (!networkVariableField.IsDirty(clientId))
+                {
+                    continue;
+                }
+
+                // KEEPSAKE NOTE - if this net var insists on a snapshot group, and even though client isn't in that group yet,
+                //                 we queue the Update command anyway. Mainly because how Dirty flag works in that it's currently a bit
+                //                 "to all or to none" (dirty flag for a variable is shared between all connected peers).
+                //                 The Snapshot system won't actually deliver the Update until client is in the correct group anyway..
+
                 // KEEPSAKE FIX - ensure min delay has passed if set
                 var currentTick = NetworkManager.NetworkTickSystem.LocalTime.Tick;
-                if (networkVariableField.IsDirty() && currentTick >= networkVariableField.MinNextTickWrite)
+                if (currentTick < networkVariableField.MinNextTickWrite)
                 {
-                    var update = new UpdateCommand();
-
-                    update.NetworkObjectId = NetworkObjectId;
-                    update.BehaviourIndex = behaviourIndex;
-                    update.VariableIndex = k;
-
-                    NetworkManager.SnapshotSystem.Store(update, networkVariableField);
-                    NetworkVariableIndexesToReset.Add(k);
-
-                    NetworkManager.NetworkMetrics.TrackNetworkVariableDeltaSent(clientId, GetNetworkObject(NetworkObjectId), networkVariableField.Name, __getTypeName(), 20); // todo: what length ?
+                    continue;
                 }
+
+                var update = new UpdateCommand();
+
+                update.NetworkObjectId = NetworkObjectId;
+                update.BehaviourIndex = behaviourIndex;
+                update.VariableIndex = k;
+
+                NetworkManager.SnapshotSystem.Store(update, networkVariableField, clientId);
+                if (!NetworkVariableIndexesToReset.TryGetValue(clientId, out var toReset))
+                {
+                    toReset = ListPool<int>.Get();
+                    NetworkVariableIndexesToReset[clientId] = toReset;
+                }
+                toReset.Add(k);
+
+                NetworkManager.NetworkMetrics.TrackNetworkVariableDeltaSent(
+                    clientId,
+                    GetNetworkObject(NetworkObjectId),
+                    networkVariableField.Name,
+                    __getTypeName(),
+                    20); // todo: what length ?
             }
         }
 
@@ -752,35 +813,51 @@ public abstract class NetworkBehaviour : MonoBehaviour
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool CouldHaveDirtyNetworkVariables()
+    private bool CouldHaveDirtyNetworkVariables(ulong clientId)
     {
-        // KEEPSAKE FIX - observable IsDirty
-        return m_DirtyVariableCount > 0;
+        foreach (var clientAndCount in m_DirtyVariablesForClientCount)
+        {
+            if (clientAndCount.Item1 == clientId)
+            {
+                if (clientAndCount.Item2 > 0)
+                {
+                    return true;
+                }
+
+                break;
+            }
+        }
+
+        return false;
     }
 
-    internal void MarkVariablesDirty()
+    // KEEPSAKE FIX - per-client dirty flag
+    internal void MarkVariablesDirty(ulong clientId)
     {
         for (var j = 0; j < NetworkVariableFields.Count; j++)
         {
-            NetworkVariableFields[j].SetDirty(true);
+            NetworkVariableFields[j].SetDirty(true, clientId);
         }
     }
 
     internal void WriteNetworkVariableData(FastBufferWriter writer, ulong clientId)
     {
-        var sb = new StringBuilder();
-        sb.AppendLine($"WriteNetworkVariableData: {NetworkVariableFields.Count} field(s) on {NetworkObjectId} / {gameObject.name}");
+        //var sb = new StringBuilder();
+        //sb.AppendLine($"WriteNetworkVariableData: {NetworkVariableFields.Count} field(s) on {NetworkObjectId} / {gameObject.name}");
 
         if (NetworkVariableFields.Count == 0)
         {
-            LogNetcode.Debug(sb.ToString());
+            //LogNetcode.Debug(sb.ToString());
             return;
         }
 
         for (var j = 0; j < NetworkVariableFields.Count; j++)
         {
-            var canClientRead = NetworkVariableFields[j].CanClientRead(clientId);
-            sb.AppendLine($"- [{j}]: {NetworkVariableFields[j].Name} (can client {clientId} read? {canClientRead})");
+            // KEEPSAKE FIX - Also check snapshot group.
+            //                If this code path is SceneObject serialization or Spawn command with variable data, then net vars that client
+            //                can read (but in currently in wrong group, so "not yet") will be queued as Update commands
+            var canClientRead = NetworkVariableFields[j].CanClientRead(clientId) && NetworkVariableFields[j].IsClientInSnapshotGroup(clientId);
+            //sb.AppendLine($"- [{j}]: {NetworkVariableFields[j].Name} (can client {clientId} read? {canClientRead})");
 
             if (canClientRead)
             {
@@ -799,10 +876,11 @@ public abstract class NetworkBehaviour : MonoBehaviour
             }
         }
 
-        LogNetcode.Debug(sb.ToString());
+        //LogNetcode.Debug(sb.ToString());
     }
 
-    internal void SetNetworkVariableData(FastBufferReader reader)
+    // KEEPSAKE FIX - added tickRead since we're calling this from Spawn command handling and want to track properly
+    internal void SetNetworkVariableData(FastBufferReader reader, int? tickRead)
     {
         //var sb = new StringBuilder();
         //sb.AppendLine($"SetNetworkVariableData: {NetworkVariableFields.Count} field(s) on {NetworkObjectId} / {gameObject.name}");
@@ -826,7 +904,13 @@ public abstract class NetworkBehaviour : MonoBehaviour
             try
             {
                 IsInternalVariableWrite = true;
-                NetworkVariableFields[j].ReadField(reader);
+                var variable = NetworkVariableFields[j];
+                // KEEPSAKE FIX - is passed along, set TickRead so that Spawn commands changing vars track the same way as Update commands
+                if (tickRead.HasValue)
+                {
+                    variable.TickRead = tickRead.Value;
+                }
+                variable.ReadField(reader);
             }
             finally
             {

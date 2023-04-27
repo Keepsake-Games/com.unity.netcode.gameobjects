@@ -53,6 +53,8 @@ namespace Unity.Netcode
         {
             // need to be persistent since passing to async method
             using var reader = new FastBufferReader(networkVariableData, Allocator.Persistent);
+            networkVariableData.Dispose(); // KEEPSAKE NOTE - dealloc now since using Allocator.Persistent for FastBufferReader above will copy and own the data
+
             var networkObject = await NetworkObject.AddSceneObjectAsync(sceneObject, reader, networkManager);
             networkManager.NetworkMetrics.TrackObjectSpawnReceived(senderId, networkObject, messageSize);
         }

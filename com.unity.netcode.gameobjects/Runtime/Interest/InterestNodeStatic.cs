@@ -24,6 +24,8 @@ namespace Unity.Netcode.Interest
         // KEEPSAKE FIX - support marking an objects interest as dirty to not recompute for all every tick
         private readonly HashSet<TObject> m_DirtyObjects = new();
 
+        private readonly List<TObject> m_KnownClients = new();
+
         public InterestNodeStatic()
         {
             m_InterestKernels = new List<Tuple<bool, IInterestKernel<TObject>>>();
@@ -51,8 +53,21 @@ namespace Unity.Netcode.Interest
             m_DirtyObjects.Remove(obj);
         }
 
+        public void ForgetClient(TObject client)
+        {
+            m_KnownClients.Remove(client);
+        }
+
         public void QueryFor(TObject client, HashSet<TObject> results)
         {
+            var objectsToCheck = m_DirtyObjects;
+            if (!m_KnownClients.Contains(client))
+            {
+                // we've never seen this client, so lets recheck everything we know to make sure caches are complete
+                objectsToCheck = m_ManagedObjects;
+                m_KnownClients.Add(client);
+            }
+
             if (m_InterestKernels.Count > 0)
             {
                 // run all the kernels.  We don't care whether they are additive or
@@ -62,7 +77,7 @@ namespace Unity.Netcode.Interest
                     var thisKernel = m_InterestKernels[i].Item2;
                     var theseResults = m_ResultSets[i];
                     theseResults.Clear();
-                    foreach (var obj in m_DirtyObjects)
+                    foreach (var obj in objectsToCheck)
                     {
                         if (thisKernel.QueryFor(client, obj))
                         {
@@ -87,7 +102,7 @@ namespace Unity.Netcode.Interest
             }
             else
             {
-                results.UnionWith(m_DirtyObjects);
+                results.UnionWith(objectsToCheck);
             }
         }
 

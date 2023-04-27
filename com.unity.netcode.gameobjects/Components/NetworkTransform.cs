@@ -773,7 +773,8 @@ namespace Unity.Netcode.Components
 
             if (CanCommitToTransform)
             {
-                m_ReplicatedNetworkState.SetDirty(true);
+                // KEEPSAKE FIX - per-client dirty flag
+                m_ReplicatedNetworkState.SetDirtyForAll(true);
             }
             else
             {

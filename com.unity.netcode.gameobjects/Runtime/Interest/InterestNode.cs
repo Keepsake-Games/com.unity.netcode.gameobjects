@@ -15,6 +15,9 @@ namespace Unity.Netcode.Interest
         // KEEPSAKE FIX - flag interest as "dirty" to only recompute on a subset
         void MarkInterestDirty(TObject obj);
         void ClearInterestDirty();
+
+        // KEEPSAKE FIX - added to cleanup clients when they d/c
+        void ForgetClient(TObject client);
     };
 
     public interface IInterestKernel<TObject>

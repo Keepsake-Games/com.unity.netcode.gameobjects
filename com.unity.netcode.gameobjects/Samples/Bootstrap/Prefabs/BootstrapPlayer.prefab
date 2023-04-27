@@ -114,11 +114,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d5a57f767e5e46a458fc5d3c628d0cbb, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  GlobalObjectIdHash: 1866032257
-  m_SnapshotGroup: 100
   AlwaysReplicateAsRoot: 0
-  DontDestroyWithOwner: 0
   AutoObjectParentSync: 1
+  DontDestroyWithOwner: 0
+  m_SnapshotGroup: 100
+  GlobalObjectIdHash: 1866032257
+  GlobalObjectIdHash_DebugInput: Packages/com.unity.netcode.gameobjects/Samples/Bootstrap/Prefabs/BootstrapPlayer.prefab
 --- !u!114 &2776227185612554462
 MonoBehaviour:
   m_ObjectHideFlags: 0

@@ -8,14 +8,19 @@ internal struct SnapshotDataMessage : INetworkMessage
 {
     internal         FastBufferWriter WriteBuffer;
     internal         FastBufferReader ReadBuffer;
-    private readonly int              m_BufferSize;
 
     // a constructor with an unused parameter is used because C# doesn't allow parameter-less constructors
     public SnapshotDataMessage(int unused)
     {
-        m_BufferSize = 1024 * 1024; // KEEPSAKE FIX - allow larger snapshots
-        WriteBuffer = new FastBufferWriter(m_BufferSize, Allocator.Temp);
-        ReadBuffer = new FastBufferReader(WriteBuffer, Allocator.Temp);
+        // KEEPSAKE FIX - changes to buffer size, allowing snapshots to grow a bit larger (since we include full net var state in spawn commands)
+        const int initialBufferSize = 1024 * 1024;
+        const int maxBufferSize = 10 * 1024 * 1024;
+
+        WriteBuffer = new FastBufferWriter(initialBufferSize, Allocator.Temp, maxBufferSize);
+
+        // KEEPSAKE FIX - why copy data from WriteBuffer to ReadBuffer when it isn't used?
+        //ReadBuffer = new FastBufferReader(WriteBuffer, Allocator.Temp);
+        ReadBuffer = default;
     }
 
     public void Serialize(FastBufferWriter writer)

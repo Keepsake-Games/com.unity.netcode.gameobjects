@@ -5,7 +5,7 @@ namespace Unity.Netcode
 {
     /// <summary>
     /// Two-way serializer wrapping FastBufferReader or FastBufferWriter.
-    /// 
+    ///
     /// Implemented as a ref struct for two reasons:
     /// 1. The BufferSerializer cannot outlive the FBR/FBW it wraps or using it will cause a crash
     /// 2. The BufferSerializer must always be passed by reference and can't be copied
@@ -64,7 +64,7 @@ namespace Unity.Netcode
 
         /// <summary>
         /// Serialize an INetworkSerializable
-        /// 
+        ///
         /// Throws OverflowException if the end of the buffer has been reached.
         /// Write buffers will grow up to the maximum allowable message size before throwing OverflowException.
         /// </summary>
@@ -78,7 +78,7 @@ namespace Unity.Netcode
         /// Serialize a string.
         ///
         /// Note: Will ALWAYS allocate a new string when reading.
-        /// 
+        ///
         /// Throws OverflowException if the end of the buffer has been reached.
         /// Write buffers will grow up to the maximum allowable message size before throwing OverflowException.
         /// </summary>
@@ -98,11 +98,11 @@ namespace Unity.Netcode
         /// Note: Will ALWAYS allocate a new array when reading.
         /// If you have a statically-sized array that you know is large enough, it's recommended to
         /// serialize the size yourself and iterate serializing array members.
-        /// 
+        ///
         /// (This is because C# doesn't allow setting an array's length value, so deserializing
         /// into an existing array of larger size would result in an array that doesn't have as many values
         /// as its Length indicates it should.)
-        /// 
+        ///
         /// Throws OverflowException if the end of the buffer has been reached.
         /// Write buffers will grow up to the maximum allowable message size before throwing OverflowException.
         /// </summary>
@@ -114,7 +114,7 @@ namespace Unity.Netcode
 
         /// <summary>
         /// Serialize a single byte
-        /// 
+        ///
         /// Throws OverflowException if the end of the buffer has been reached.
         /// Write buffers will grow up to the maximum allowable message size before throwing OverflowException.
         /// </summary>
@@ -127,7 +127,7 @@ namespace Unity.Netcode
         /// <summary>
         /// Serialize an unmanaged type. Supports basic value types as well as structs.
         /// The provided type will be copied to/from the buffer as it exists in memory.
-        /// 
+        ///
         /// Throws OverflowException if the end of the buffer has been reached.
         /// Write buffers will grow up to the maximum allowable message size before throwing OverflowException.
         /// </summary>
@@ -205,8 +205,64 @@ namespace Unity.Netcode
             }
         }
 
+        public void SerializeAssetReferences(ref System.Collections.Generic.List<UnityEngine.AddressableAssets.AssetReferenceGameObject> value)
+        {
+            bool isNull = default;
+            if (m_Implementation.IsWriter)
+            {
+                isNull = value == null;
+            }
+            m_Implementation.SerializeValue(ref isNull);
+            if (isNull)
+            {
+                value = null;
+                return;
+            }
+
+            int count = default;
+            if (m_Implementation.IsWriter)
+            {
+                count = value.Count;
+            }
+
+            m_Implementation.SerializeValue(ref count);
+
+            if (m_Implementation.IsReader)
+            {
+                value = new System.Collections.Generic.List<UnityEngine.AddressableAssets.AssetReferenceGameObject>(count);
+            }
+
+            for (var i = 0; i < count; ++i)
+            {
+                var assetGuid = string.Empty;;
+                if (m_Implementation.IsWriter)
+                {
+                    assetGuid = value[i].AssetGUID;
+                }
+
+                m_Implementation.SerializeValue(ref assetGuid);
+
+                if (m_Implementation.IsReader)
+                {
+                    value.Add(new UnityEngine.AddressableAssets.AssetReferenceGameObject(assetGuid));
+                }
+            }
+        }
+
         public void SerializeAssetReferencesT<T>(ref System.Collections.Generic.List<UnityEngine.AddressableAssets.AssetReferenceT<T>> value) where T : Object
         {
+            bool isNull = default;
+            if (m_Implementation.IsWriter)
+            {
+                isNull = value == null;
+            }
+            m_Implementation.SerializeValue(ref isNull);
+            if (isNull)
+            {
+                value = null;
+                return;
+            }
+
             int count = default;
             if (m_Implementation.IsWriter)
             {

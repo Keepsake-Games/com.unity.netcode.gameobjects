@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using Cysharp.Threading.Tasks;
+using UniRx;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Netcode.Interest;
@@ -959,6 +960,11 @@ public class NetworkManager : MonoBehaviour, INetworkUpdateSystem
     /// </summary>
     public bool StartClient()
     {
+        // KEEPSAKE FIX - increase log verbosity while joining
+        var origLogLevel = LogLevel;
+        using var _ = Disposable.Create(() => LogLevel = origLogLevel);
+        LogLevel = LogLevel.Developer;
+
         if (NetworkLog.CurrentLogLevel <= LogLevel.Developer)
         {
             NetworkLog.LogInfo(nameof(StartClient));
@@ -1179,18 +1185,20 @@ public class NetworkManager : MonoBehaviour, INetworkUpdateSystem
 
             //Don't know if I have to disconnect the clients. I'm assuming the NetworkTransport does all the cleaning on shutdown. But this way the clients get a disconnect message from server (so long it does't get lost)
 
-            foreach (var pair in ConnectedClients)
+            // KEEPSAKE FIX - make copy of keys to avoid sometimes getting "collection was modified" exception when playmode in Editor is shutting down
+            var keys = new List<ulong>(ConnectedClients.Keys);
+            foreach (var key in keys)
             {
-                if (!disconnectedIds.Contains(pair.Key))
+                if (!disconnectedIds.Contains(key))
                 {
-                    disconnectedIds.Add(pair.Key);
+                    disconnectedIds.Add(key);
 
-                    if (pair.Key == NetworkConfig.NetworkTransport.ServerClientId)
+                    if (key == NetworkConfig.NetworkTransport.ServerClientId)
                     {
                         continue;
                     }
 
-                    DisconnectRemoteClient(pair.Key);
+                    DisconnectRemoteClient(key);
                 }
             }
 
@@ -1689,7 +1697,8 @@ public class NetworkManager : MonoBehaviour, INetworkUpdateSystem
                     InterestManager.OnClientDisconnected(playerObject);
 
                     // As long as we can destroy the PlayerObject with the owner
-                    if (!playerObject.DontDestroyWithOwner)
+                    // KEEPSAKE FIX - rename to not negate
+                    if (playerObject.DestroyWithOwner)
                     {
                         if (PrefabHandler.ContainsHandler(ConnectedClients[clientId].PlayerObject.GlobalObjectIdHash))
                         {
@@ -1711,7 +1720,8 @@ public class NetworkManager : MonoBehaviour, INetworkUpdateSystem
                     var ownedObject = networkClient.OwnedObjects[i];
                     if (ownedObject != null)
                     {
-                        if (!ownedObject.DontDestroyWithOwner)
+                        // KEEPSAKE FIX - rename to not negate
+                        if (ownedObject.DestroyWithOwner)
                         {
                             if (PrefabHandler.ContainsHandler(ConnectedClients[clientId].OwnedObjects[i].GlobalObjectIdHash))
                             {

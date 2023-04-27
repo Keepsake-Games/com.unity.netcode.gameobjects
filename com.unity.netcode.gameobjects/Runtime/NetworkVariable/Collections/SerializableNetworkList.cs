@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using UniRx.Observers;
+using Unity.Collections;
 
 namespace Unity.Netcode
 {
@@ -17,10 +19,13 @@ public class SerializableNetworkList<T> : NetworkVariableBase where T : INetwork
     /// <param name="changeEvent">Struct containing information about the change event</param>
     public delegate void OnListChangedDelegate(NetworkListEvent<T> changeEvent);
 
-    private readonly List<NetworkListEvent<T>> m_DirtyEvents = new(64);
-    private readonly List<T>                   m_List        = new(64);
 
-    private bool m_HasDirtyEvents;
+    // KEEPSAKE FIX per-client dirty flags
+    private readonly Dictionary<ulong, List<NetworkListEvent<T>>> m_DirtyEvents = new Dictionary<ulong, List<NetworkListEvent<T>>>();
+    private readonly List<T>                                      m_List        = new(64);
+
+    // KEEPSAKE FIX - dedicated bool to avoid checking Length in hot path
+    private NativeParallelHashMap<ulong, bool> m_HasDirtyEvents = new(20, Allocator.Persistent);
 
     public int Count => m_List.Count;
 
@@ -84,25 +89,51 @@ public class SerializableNetworkList<T> : NetworkVariableBase where T : INetwork
     public event OnListChangedDelegate OnListChanged;
 
     /// <inheritdoc />
-    public override void ResetDirty()
+    public override void ResetDirty(ulong? clientId)
     {
-        base.ResetDirty();
-        m_DirtyEvents.Clear();
-        m_HasDirtyEvents = false;
-        m_IsDirtySubject.OnNext(IsDirty());
+        base.ResetDirty(clientId);
+
+        if (clientId.HasValue)
+        {
+            if (m_DirtyEvents.TryGetValue(clientId.Value, out var dirtyEvents))
+            {
+                dirtyEvents.Clear();
+            }
+
+            m_HasDirtyEvents[clientId.Value] = false;
+        }
+        else
+        {
+            m_DirtyEvents.Clear();
+            m_HasDirtyEvents.Clear();
+        }
     }
 
     /// <inheritdoc />
-    public override bool IsDirty()
+    public override bool IsDirty(ulong? clientId)
     {
+        if (clientId.HasValue)
+        {
+            return (m_HasDirtyEvents.TryGetValue(clientId.Value, out var hasDirtyEvents) && hasDirtyEvents) || base.IsDirty(clientId);
+        }
+
+        // clientId == null => is dirty for any client?
+        foreach (var kvp in m_HasDirtyEvents)
+        {
+            if (kvp.Value)
+            {
+                return true;
+            }
+        }
+
         // we call the base class to allow the SetDirty() mechanism to work
-        return m_HasDirtyEvents || base.IsDirty();
+        return base.IsDirty(clientId);
     }
 
     /// <inheritdoc />
-    public override void WriteDelta(FastBufferWriter writer)
+    public override void WriteDelta(FastBufferWriter writer, ulong clientId)
     {
-        if (base.IsDirty())
+        if (IsBaseDirty())
         {
             writer.WriteValueSafe((ushort)1);
             writer.WriteValueSafe(NetworkListEvent<T>.EventType.Full);
@@ -111,37 +142,43 @@ public class SerializableNetworkList<T> : NetworkVariableBase where T : INetwork
             return;
         }
 
-        writer.WriteValueSafe((ushort)m_DirtyEvents.Count);
-        for (var i = 0; i < m_DirtyEvents.Count; i++)
+        if (!m_DirtyEvents.TryGetValue(clientId, out var dirtyEvents))
         {
-            writer.WriteValueSafe(m_DirtyEvents[i].Type);
-            switch (m_DirtyEvents[i].Type)
+            writer.WriteValueSafe((ushort)0);
+            return;
+        }
+
+        writer.WriteValueSafe((ushort)dirtyEvents.Count);
+        for (var i = 0; i < dirtyEvents.Count; i++)
+        {
+            writer.WriteValueSafe(dirtyEvents[i].Type);
+            switch (dirtyEvents[i].Type)
             {
                 case NetworkListEvent<T>.EventType.Add:
                 {
-                    writer.WriteNetworkSerializable(m_DirtyEvents[i].Value);
+                    writer.WriteNetworkSerializable(dirtyEvents[i].Value);
                 }
                     break;
                 case NetworkListEvent<T>.EventType.Insert:
                 {
-                    writer.WriteValueSafe(m_DirtyEvents[i].Index);
-                    writer.WriteNetworkSerializable(m_DirtyEvents[i].Value);
+                    writer.WriteValueSafe(dirtyEvents[i].Index);
+                    writer.WriteNetworkSerializable(dirtyEvents[i].Value);
                 }
                     break;
                 case NetworkListEvent<T>.EventType.Remove:
                 {
-                    writer.WriteNetworkSerializable(m_DirtyEvents[i].Value);
+                    writer.WriteNetworkSerializable(dirtyEvents[i].Value);
                 }
                     break;
                 case NetworkListEvent<T>.EventType.RemoveAt:
                 {
-                    writer.WriteValueSafe(m_DirtyEvents[i].Index);
+                    writer.WriteValueSafe(dirtyEvents[i].Index);
                 }
                     break;
                 case NetworkListEvent<T>.EventType.Value:
                 {
-                    writer.WriteValueSafe(m_DirtyEvents[i].Index);
-                    writer.WriteNetworkSerializable(m_DirtyEvents[i].Value);
+                    writer.WriteValueSafe(dirtyEvents[i].Index);
+                    writer.WriteNetworkSerializable(dirtyEvents[i].Value);
                 }
                     break;
                 case NetworkListEvent<T>.EventType.Clear:
@@ -209,15 +246,13 @@ public class SerializableNetworkList<T> : NetworkVariableBase where T : INetwork
 
                     if (keepDirtyDelta)
                     {
-                        m_DirtyEvents.Add(
+                        AddDirtyEventForAll(
                             new NetworkListEvent<T>()
                             {
                                 Type = eventType,
                                 Index = m_List.Count - 1,
                                 Value = m_List[m_List.Count - 1],
                             });
-                        m_HasDirtyEvents = true;
-                        m_IsDirtySubject.OnNext(IsDirty());
                     }
                 }
                     break;
@@ -245,15 +280,13 @@ public class SerializableNetworkList<T> : NetworkVariableBase where T : INetwork
 
                     if (keepDirtyDelta)
                     {
-                        m_DirtyEvents.Add(
+                        AddDirtyEventForAll(
                             new NetworkListEvent<T>()
                             {
                                 Type = eventType,
                                 Index = index,
                                 Value = m_List[index],
                             });
-                        m_HasDirtyEvents = true;
-                        m_IsDirtySubject.OnNext(IsDirty());
                     }
                 }
                     break;
@@ -281,15 +314,13 @@ public class SerializableNetworkList<T> : NetworkVariableBase where T : INetwork
 
                     if (keepDirtyDelta)
                     {
-                        m_DirtyEvents.Add(
+                        AddDirtyEventForAll(
                             new NetworkListEvent<T>()
                             {
                                 Type = eventType,
                                 Index = index,
                                 Value = value,
                             });
-                        m_HasDirtyEvents = true;
-                        m_IsDirtySubject.OnNext(IsDirty());
                     }
                 }
                     break;
@@ -312,15 +343,13 @@ public class SerializableNetworkList<T> : NetworkVariableBase where T : INetwork
 
                     if (keepDirtyDelta)
                     {
-                        m_DirtyEvents.Add(
+                        AddDirtyEventForAll(
                             new NetworkListEvent<T>()
                             {
                                 Type = eventType,
                                 Index = index,
                                 Value = value,
                             });
-                        m_HasDirtyEvents = true;
-                        m_IsDirtySubject.OnNext(IsDirty());
                     }
                 }
                     break;
@@ -350,7 +379,7 @@ public class SerializableNetworkList<T> : NetworkVariableBase where T : INetwork
 
                     if (keepDirtyDelta)
                     {
-                        m_DirtyEvents.Add(
+                        AddDirtyEventForAll(
                             new NetworkListEvent<T>()
                             {
                                 Type = eventType,
@@ -358,8 +387,6 @@ public class SerializableNetworkList<T> : NetworkVariableBase where T : INetwork
                                 Value = value,
                                 PreviousValue = previousValue,
                             });
-                        m_HasDirtyEvents = true;
-                        m_IsDirtySubject.OnNext(IsDirty());
                     }
                 }
                     break;
@@ -379,22 +406,22 @@ public class SerializableNetworkList<T> : NetworkVariableBase where T : INetwork
 
                     if (keepDirtyDelta)
                     {
-                        m_DirtyEvents.Add(
+                        AddDirtyEventForAll(
                             new NetworkListEvent<T>()
                             {
                                 Type = eventType,
                             });
-                        m_HasDirtyEvents = true;
-                        m_IsDirtySubject.OnNext(IsDirty());
                     }
                 }
                     break;
                 case NetworkListEvent<T>.EventType.Full:
                 {
                     ReadField(reader);
-                    ResetDirty();
+                    ResetDirty(ulong.MaxValue);
                 }
                     break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(eventType), $"{eventType} is not a known value of {nameof(NetworkListEvent<T>.EventType)}");
             }
         }
     }
@@ -494,16 +521,49 @@ public class SerializableNetworkList<T> : NetworkVariableBase where T : INetwork
 
     private void HandleAddListEvent(NetworkListEvent<T> listEvent)
     {
-        m_DirtyEvents.Add(listEvent);
-        m_HasDirtyEvents = true;
-        m_IsDirtySubject.OnNext(IsDirty());
+        AddDirtyEventForAll(listEvent);
+
         OnListChanged?.Invoke(listEvent);
+    }
+
+    private void AddDirtyEventForAll(NetworkListEvent<T> listEvent)
+    {
+        if (!m_NetworkBehaviour.NetworkManager.IsServer)
+        {
+            AddDirtyEvent(listEvent, m_NetworkBehaviour.NetworkManager.ServerClientId);
+        }
+        else
+        {
+            foreach (var clientId in m_NetworkBehaviour.NetworkManager.ConnectedClientsIds)
+            {
+                if (clientId != m_NetworkBehaviour.NetworkManager.ServerClientId)
+                {
+                    AddDirtyEvent(listEvent, clientId);
+                }
+            }
+        }
+    }
+
+    private void AddDirtyEvent(NetworkListEvent<T> listEvent, ulong clientId)
+    {
+        // NOTE: this will not call OnListChanged, you probably want to use HandleAddListEvent
+
+        if (!m_DirtyEvents.TryGetValue(clientId, out var dirtyEvents))
+        {
+            dirtyEvents = new List<NetworkListEvent<T>>();
+            m_DirtyEvents[clientId] = dirtyEvents;
+        }
+
+        dirtyEvents.Add(listEvent);
+        m_HasDirtyEvents[clientId] = true;
+        m_DirtyForClientSubject.OnNext((true, clientId));
     }
 
     public override void Dispose()
     {
         m_List.Clear();
         m_DirtyEvents.Clear();
+        m_HasDirtyEvents.Dispose();
         base.Dispose();
     }
 }

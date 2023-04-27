@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Unity.Collections;
+using UnityEngine.Pool;
 
 namespace Unity.Netcode
 {
@@ -69,7 +70,7 @@ namespace Unity.Netcode
                     if (NetworkBehaviour.NetworkManager.NetworkConfig.EnsureNetworkVariableLengthSafety)
                     {
                         var tmpWriter = new FastBufferWriter(MessagingSystem.NON_FRAGMENTED_MESSAGE_MAX_SIZE, Allocator.Temp, short.MaxValue);
-                        NetworkBehaviour.NetworkVariableFields[k].WriteDelta(tmpWriter);
+                        NetworkBehaviour.NetworkVariableFields[k].WriteDelta(tmpWriter, ClientId);
 
                         if (!writer.TryBeginWrite(FastBufferWriter.GetWriteSize<ushort>() + tmpWriter.Length))
                         {
@@ -80,14 +81,16 @@ namespace Unity.Netcode
                     }
                     else
                     {
-                        NetworkBehaviour.NetworkVariableFields[k].WriteDelta(writer);
+                        NetworkBehaviour.NetworkVariableFields[k].WriteDelta(writer, ClientId);
                     }
 
-                    if (!NetworkBehaviour.NetworkVariableIndexesToResetSet.Contains(k))
+                    // KEEPSAKE FIX - per-client dirty flag
+                    if (!NetworkBehaviour.NetworkVariableIndexesToReset.TryGetValue(ClientId, out var toReset))
                     {
-                        NetworkBehaviour.NetworkVariableIndexesToResetSet.Add(k);
-                        NetworkBehaviour.NetworkVariableIndexesToReset.Add(k);
+                        toReset = ListPool<int>.Get();
+                        NetworkBehaviour.NetworkVariableIndexesToReset[ClientId] = toReset;
                     }
+                    toReset.Add(k);
 
                     NetworkBehaviour.NetworkManager.NetworkMetrics.TrackNetworkVariableDeltaSent(
                         ClientId,

@@ -62,11 +62,11 @@ namespace Unity.Netcode.Components
             }
         }
 
-        /* 
-         * AutoSend is the ability to select which parameters linked to this animator 
+        /*
+         * AutoSend is the ability to select which parameters linked to this animator
          * get replicated on a regular basis regardless of a state change. The thinking
-         * behind this is that many of the parameters people use are usually booleans 
-         * which result in a state change and thus would cause a full sync of state. 
+         * behind this is that many of the parameters people use are usually booleans
+         * which result in a state change and thus would cause a full sync of state.
          * Thus if you really care about a parameter syncing then you need to be explict
          * by selecting it in the inspector when an NetworkAnimator is selected.
          */
@@ -103,7 +103,7 @@ namespace Unity.Netcode.Components
             public fixed byte Value[4]; // this is a max size of 4 bytes
         }
 
-        // 128bytes per Animator 
+        // 128bytes per Animator
         private FastBufferWriter m_ParameterWriter = new FastBufferWriter(K_MaxAnimationParams * sizeof(float), Allocator.Persistent);
         private NativeArray<AnimatorParamCache> m_CachedAnimatorParameters;
 
@@ -292,8 +292,8 @@ namespace Unity.Netcode.Components
 
         /* $AS TODO: Right now we are not checking for changed values this is because
         the read side of this function doesn't have similar logic which would cause
-        an overflow read because it doesn't know if the value is there or not. So 
-        there needs to be logic to track which indexes changed in order for there 
+        an overflow read because it doesn't know if the value is there or not. So
+        there needs to be logic to track which indexes changed in order for there
         to be proper value change checking. Will revist in 1.1.0.
         */
         private unsafe bool WriteParameters(FastBufferWriter writer, bool autoSend)

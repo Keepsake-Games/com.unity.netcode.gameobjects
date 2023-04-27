@@ -89,7 +89,8 @@ namespace Unity.Netcode
             // KEEPSAKE FIX - find objects in Attached instead of Spawned collection
             if (!networkManager.SpawnManager.AttachedObjects.TryGetValue(metadata.NetworkObjectId, out var networkObject))
             {
-                throw new Exception($"RPC called on a {nameof(NetworkObject)} that is not in the attached objects list - please make sure the {nameof(NetworkObject)} is attached before calling RPCs.");
+                throw new Exception($"Cannot call RPC on NetworkObject #{metadata.NetworkObjectId} because it is not spawned with the network layer, so it cannot be found. Or is it possible the object was despawned? Either that or its too early in its lifetime to call this RPC now, and you should wait for NetworkSetup or SafeStart.");
+                //throw new Exception($"RPC called on a {nameof(NetworkObject)} that is not in the attached objects list - please make sure the {nameof(NetworkObject)} is attached before calling RPCs.");
             }
             var networkBehaviour = networkObject.GetNetworkBehaviourAtOrderIndex(metadata.NetworkBehaviourId);
 

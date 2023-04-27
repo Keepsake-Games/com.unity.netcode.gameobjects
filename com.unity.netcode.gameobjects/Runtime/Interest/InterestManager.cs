@@ -60,6 +60,11 @@ namespace Unity.Netcode.Interest
 
         public void OnClientDisconnected(TObject client)
         {
+            foreach (var c in m_ChildNodes)
+            {
+                c.ForgetClient(client);
+            }
+
             m_CachedResults.Remove(client);
         }
         // END KEEPSAKE FIX

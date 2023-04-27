@@ -11,7 +11,10 @@ namespace Unity.Netcode
     public class NetworkList<T> : NetworkVariableBase where T : unmanaged, IEquatable<T>
     {
         private NativeList<T> m_List = new NativeList<T>(64, Allocator.Persistent);
-        private NativeList<NetworkListEvent<T>> m_DirtyEvents = new NativeList<NetworkListEvent<T>>(64, Allocator.Persistent);
+
+        // KEEPSAKE FIX per-client dirty flags
+        //private NativeList<NetworkListEvent<T>> m_DirtyEvents = new NativeList<NetworkListEvent<T>>(64, Allocator.Persistent);
+        private readonly Dictionary<ulong, NativeList<NetworkListEvent<T>>> m_DirtyEvents = new();
 
         /// <summary>
         /// Delegate type for list changed event
@@ -24,8 +27,8 @@ namespace Unity.Netcode
         /// </summary>
         public event OnListChangedDelegate OnListChanged;
 
-        // KEEPSAKE FIX - to avoid checking Length in hot path
-        private bool m_HasDirtyEvents;
+        // KEEPSAKE FIX - dedicated bool to avoid checking Length in hot path
+        private NativeParallelHashMap<ulong, bool> m_HasDirtyEvents = new(20, Allocator.Persistent);
 
         /// <summary>
         /// Creates a NetworkList with the default value and settings
@@ -59,26 +62,55 @@ namespace Unity.Netcode
         }
 
         /// <inheritdoc />
-        public override void ResetDirty()
+        public override void ResetDirty(ulong? clientId)
         {
-            base.ResetDirty();
-            m_DirtyEvents.Clear();
-            m_HasDirtyEvents = false;
-            m_IsDirtySubject.OnNext(IsDirty());
+            base.ResetDirty(clientId);
+
+            if (clientId.HasValue)
+            {
+                if (m_DirtyEvents.TryGetValue(clientId.Value, out var dirtyEvents))
+                {
+                    dirtyEvents.Clear();
+                }
+
+                m_HasDirtyEvents[clientId.Value] = false;
+            }
+            else
+            {
+                foreach (var kvp in m_DirtyEvents)
+                {
+                    kvp.Value.Clear();
+                }
+
+                m_HasDirtyEvents.Clear();
+            }
         }
 
         /// <inheritdoc />
-        public override bool IsDirty()
+        public override bool IsDirty(ulong? clientId)
         {
+            if (clientId.HasValue)
+            {
+                return (m_HasDirtyEvents.TryGetValue(clientId.Value, out var hasDirtyEvents) && hasDirtyEvents) || base.IsDirty(clientId);
+            }
+
+            // clientId == null => is dirty for any client?
+            foreach (var kvp in m_HasDirtyEvents)
+            {
+                if (kvp.Value)
+                {
+                    return true;
+                }
+            }
+
             // we call the base class to allow the SetDirty() mechanism to work
-            return m_HasDirtyEvents || base.IsDirty();
+            return base.IsDirty(clientId);
         }
 
         /// <inheritdoc />
-        public override void WriteDelta(FastBufferWriter writer)
+        public override void WriteDelta(FastBufferWriter writer, ulong clientId)
         {
-
-            if (base.IsDirty())
+            if (IsBaseDirty())
             {
                 writer.WriteValueSafe((ushort)1);
                 writer.WriteValueSafe(NetworkListEvent<T>.EventType.Full);
@@ -87,37 +119,43 @@ namespace Unity.Netcode
                 return;
             }
 
-            writer.WriteValueSafe((ushort)m_DirtyEvents.Length);
-            for (int i = 0; i < m_DirtyEvents.Length; i++)
+            if (!m_DirtyEvents.TryGetValue(clientId, out var dirtyEvents))
             {
-                writer.WriteValueSafe(m_DirtyEvents[i].Type);
-                switch (m_DirtyEvents[i].Type)
+                writer.WriteValueSafe((ushort)0);
+                return;
+            }
+
+            writer.WriteValueSafe((ushort)dirtyEvents.Length);
+            for (int i = 0; i < dirtyEvents.Length; i++)
+            {
+                writer.WriteValueSafe(dirtyEvents[i].Type);
+                switch (dirtyEvents[i].Type)
                 {
                     case NetworkListEvent<T>.EventType.Add:
                         {
-                            writer.WriteValueSafe(m_DirtyEvents[i].Value);
+                            writer.WriteValueSafe(dirtyEvents[i].Value);
                         }
                         break;
                     case NetworkListEvent<T>.EventType.Insert:
                         {
-                            writer.WriteValueSafe(m_DirtyEvents[i].Index);
-                            writer.WriteValueSafe(m_DirtyEvents[i].Value);
+                            writer.WriteValueSafe(dirtyEvents[i].Index);
+                            writer.WriteValueSafe(dirtyEvents[i].Value);
                         }
                         break;
                     case NetworkListEvent<T>.EventType.Remove:
                         {
-                            writer.WriteValueSafe(m_DirtyEvents[i].Value);
+                            writer.WriteValueSafe(dirtyEvents[i].Value);
                         }
                         break;
                     case NetworkListEvent<T>.EventType.RemoveAt:
                         {
-                            writer.WriteValueSafe(m_DirtyEvents[i].Index);
+                            writer.WriteValueSafe(dirtyEvents[i].Index);
                         }
                         break;
                     case NetworkListEvent<T>.EventType.Value:
                         {
-                            writer.WriteValueSafe(m_DirtyEvents[i].Index);
-                            writer.WriteValueSafe(m_DirtyEvents[i].Value);
+                            writer.WriteValueSafe(dirtyEvents[i].Index);
+                            writer.WriteValueSafe(dirtyEvents[i].Value);
                         }
                         break;
                     case NetworkListEvent<T>.EventType.Clear:
@@ -183,14 +221,12 @@ namespace Unity.Netcode
 
                             if (keepDirtyDelta)
                             {
-                                m_DirtyEvents.Add(new NetworkListEvent<T>()
+                                AddDirtyEventForAll(new NetworkListEvent<T>()
                                 {
                                     Type = eventType,
                                     Index = m_List.Length - 1,
                                     Value = m_List[m_List.Length - 1]
                                 });
-                                m_HasDirtyEvents = true;
-                                m_IsDirtySubject.OnNext(IsDirty());
                             }
                         }
                         break;
@@ -213,14 +249,12 @@ namespace Unity.Netcode
 
                             if (keepDirtyDelta)
                             {
-                                m_DirtyEvents.Add(new NetworkListEvent<T>()
+                                AddDirtyEventForAll(new NetworkListEvent<T>()
                                 {
                                     Type = eventType,
                                     Index = index,
                                     Value = m_List[index]
                                 });
-                                m_HasDirtyEvents = true;
-                                m_IsDirtySubject.OnNext(IsDirty());
                             }
                         }
                         break;
@@ -247,14 +281,12 @@ namespace Unity.Netcode
 
                             if (keepDirtyDelta)
                             {
-                                m_DirtyEvents.Add(new NetworkListEvent<T>()
+                                AddDirtyEventForAll(new NetworkListEvent<T>()
                                 {
                                     Type = eventType,
                                     Index = index,
                                     Value = value
                                 });
-                                m_HasDirtyEvents = true;
-                                m_IsDirtySubject.OnNext(IsDirty());
                             }
                         }
                         break;
@@ -276,14 +308,12 @@ namespace Unity.Netcode
 
                             if (keepDirtyDelta)
                             {
-                                m_DirtyEvents.Add(new NetworkListEvent<T>()
+                                AddDirtyEventForAll(new NetworkListEvent<T>()
                                 {
                                     Type = eventType,
                                     Index = index,
                                     Value = value
                                 });
-                                m_HasDirtyEvents = true;
-                                m_IsDirtySubject.OnNext(IsDirty());
                             }
                         }
                         break;
@@ -312,15 +342,13 @@ namespace Unity.Netcode
 
                             if (keepDirtyDelta)
                             {
-                                m_DirtyEvents.Add(new NetworkListEvent<T>()
+                                AddDirtyEventForAll(new NetworkListEvent<T>()
                                 {
                                     Type = eventType,
                                     Index = index,
                                     Value = value,
                                     PreviousValue = previousValue
                                 });
-                                m_HasDirtyEvents = true;
-                                m_IsDirtySubject.OnNext(IsDirty());
                             }
                         }
                         break;
@@ -339,19 +367,17 @@ namespace Unity.Netcode
 
                             if (keepDirtyDelta)
                             {
-                                m_DirtyEvents.Add(new NetworkListEvent<T>()
+                                AddDirtyEventForAll(new NetworkListEvent<T>()
                                 {
                                     Type = eventType
                                 });
-                                m_HasDirtyEvents = true;
-                                m_IsDirtySubject.OnNext(IsDirty());
                             }
                         }
                         break;
                     case NetworkListEvent<T>.EventType.Full:
                         {
                             ReadField(reader);
-                            ResetDirty();
+                            ResetDirty(null);
                         }
                         break;
                 }
@@ -479,10 +505,42 @@ namespace Unity.Netcode
 
         private void HandleAddListEvent(NetworkListEvent<T> listEvent)
         {
-            m_DirtyEvents.Add(listEvent);
-            m_HasDirtyEvents = true;
-            m_IsDirtySubject.OnNext(IsDirty());
+            AddDirtyEventForAll(listEvent);
+
             OnListChanged?.Invoke(listEvent);
+        }
+
+        private void AddDirtyEventForAll(NetworkListEvent<T> listEvent)
+        {
+            if (!m_NetworkBehaviour.NetworkManager.IsServer)
+            {
+                AddDirtyEvent(listEvent, m_NetworkBehaviour.NetworkManager.ServerClientId);
+            }
+            else
+            {
+                foreach (var clientId in m_NetworkBehaviour.NetworkManager.ConnectedClientsIds)
+                {
+                    if (clientId != m_NetworkBehaviour.NetworkManager.ServerClientId)
+                    {
+                        AddDirtyEvent(listEvent, clientId);
+                    }
+                }
+            }
+        }
+
+        private void AddDirtyEvent(NetworkListEvent<T> listEvent, ulong clientId)
+        {
+            // NOTE: this will not call OnListChanged, you probably want to use HandleAddListEvent
+
+            if (!m_DirtyEvents.TryGetValue(clientId, out var dirtyEvents))
+            {
+                dirtyEvents = new NativeList<NetworkListEvent<T>>(Allocator.Persistent);
+                m_DirtyEvents[clientId] = dirtyEvents;
+            }
+
+            dirtyEvents.Add(listEvent);
+            m_HasDirtyEvents[clientId] = true;
+            m_DirtyForClientSubject.OnNext((true, clientId));
         }
 
         public int LastModifiedTick
@@ -501,10 +559,14 @@ namespace Unity.Netcode
                 m_List.Dispose();
             }
 
-            if (m_DirtyEvents.IsCreated)
+            foreach (var kvp in m_DirtyEvents)
             {
-                m_DirtyEvents.Dispose();
+                kvp.Value.Dispose();
             }
+
+            m_DirtyEvents.Clear();
+
+            m_HasDirtyEvents.Dispose();
 
             base.Dispose();
         }

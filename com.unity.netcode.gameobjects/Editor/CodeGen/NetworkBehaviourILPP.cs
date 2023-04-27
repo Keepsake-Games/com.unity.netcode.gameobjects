@@ -64,8 +64,7 @@ namespace Unity.Netcode.Editor.CodeGen
                         mainModule.GetTypes()
                                   .Where(
                                       t => t.HasInterface(CodeGenHelpers.INetworkRpcHandler_FullName, true)
-                                           && !t.IsSubclassOf(CodeGenHelpers.NetworkBehaviour_FullName)
-                                           && !t.Resolve().IsAbstract).ToList().ForEach(
+                                           && !t.IsSubclassOf(CodeGenHelpers.NetworkBehaviour_FullName)).ToList().ForEach(
                                       h => ProcessINetworkRpcHandler(h, compiledAssembly.Defines));
                     }
                     catch (Exception e)
@@ -680,12 +679,13 @@ namespace Unity.Netcode.Editor.CodeGen
                             }
                         }
 
-                        if (withLocalPrediction && !methodDefinition.Name.EndsWith("PredictedServerRpc", StringComparison.OrdinalIgnoreCase))
+                        if (withLocalPrediction && !methodDefinition.Name.EndsWith("PredictedServerRpc", StringComparison.Ordinal))
                         {
                             m_Diagnostics.AddError(methodDefinition, "A predicted ServerRpc method must end with 'PredictedServerRpc' suffix!");
                             isValid = false;
                         }
-                        else if (!methodDefinition.Name.EndsWith("ServerRpc", StringComparison.OrdinalIgnoreCase))
+                        // KEEPSAKE FIX make check case sensitive for some order in this world
+                        else if (!methodDefinition.Name.EndsWith("ServerRpc", StringComparison.Ordinal))
                         {
                             m_Diagnostics.AddError(methodDefinition, "ServerRpc method must end with 'ServerRpc' suffix!");
                             isValid = false;
@@ -693,8 +693,9 @@ namespace Unity.Netcode.Editor.CodeGen
                         // END KEEPSAKE FIX
                     }
 
+                    // KEEPSAKE FIX make check case sensitive for some order in this world
                     if (customAttributeType_FullName == CodeGenHelpers.ClientRpcAttribute_FullName &&
-                        !methodDefinition.Name.EndsWith("ClientRpc", StringComparison.OrdinalIgnoreCase))
+                        !methodDefinition.Name.EndsWith("ClientRpc", StringComparison.Ordinal))
                     {
                         m_Diagnostics.AddError(methodDefinition, "ClientRpc method must end with 'ClientRpc' suffix!");
                         isValid = false;
@@ -762,7 +763,13 @@ namespace Unity.Netcode.Editor.CodeGen
                             var meetsConstraints = true;
                             foreach (var constraint in method.GenericParameters[0].Constraints)
                             {
+                                // KEEPSAKE FIX - cherry picked from upstream for 2021.3.20 compat
+                                #if CECIL_CONSTRAINTS_ARE_TYPE_REFERENCES
                                 var resolvedConstraint = constraint.Resolve();
+                                #else
+                                var resolvedConstraint = constraint.ConstraintType.Resolve();
+                                #endif
+                                // END KEEPSAKE FIX
 
                                 if ((resolvedConstraint.IsInterface && !checkType.HasInterface(resolvedConstraint.FullName)) ||
                                     (resolvedConstraint.IsClass && !checkType.Resolve().IsSubclassOf(resolvedConstraint.FullName)) ||
@@ -884,7 +891,13 @@ namespace Unity.Netcode.Editor.CodeGen
                         {
                             foreach (var constraint in method.GenericParameters[0].Constraints)
                             {
+                                // KEEPSAKE FIX - cherry picked from upstream for 2021.3.20 compat
+                                #if CECIL_CONSTRAINTS_ARE_TYPE_REFERENCES
                                 var resolvedConstraint = constraint.Resolve();
+                                #else
+                                var resolvedConstraint = constraint.ConstraintType.Resolve();
+                                #endif
+                                // END KEEPSAKE FIX
 
                                 if ((resolvedConstraint.IsInterface && checkType.HasInterface(resolvedConstraint.FullName)) ||
                                     (resolvedConstraint.IsClass && checkType.Resolve().IsSubclassOf(resolvedConstraint.FullName)))

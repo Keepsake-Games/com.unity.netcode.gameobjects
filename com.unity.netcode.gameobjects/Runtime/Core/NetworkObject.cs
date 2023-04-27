@@ -3,11 +3,12 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Cysharp.Threading.Tasks;
 using Keepsake.Common;
-using Unity.Collections;
+using Keepsake.Common.Extensions;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Assertions;
-using static Unity.Netcode.NetworkObject;
+using UnityEngine.Pool;
+using UnityEngine.SceneManagement;
 #if UNITY_EDITOR
 using Unity.Netcode.SceneManagement;
 using UnityEditor.AddressableAssets;
@@ -63,11 +64,16 @@ public sealed class NetworkObject : MonoBehaviour
     /// </summary>
     public VisibilityDelegate CheckObjectVisibility = null;
 
+    // KEEPSAKE FIX
+    public Action<NetworkObject> MovedToNewScene;
+
     /// <summary>
     ///     Whether or not to destroy this object if it's owner is destroyed.
     ///     If false, the objects ownership will be given to the server.
     /// </summary>
-    public bool DontDestroyWithOwner;
+    /// KEEPSAKE FIX - removed negation in boolean name (very confusing) and default to not destroying with owner
+    //public bool DontDestroyWithOwner;
+    public bool DestroyWithOwner;
 
     /// <summary>
     ///     Delegate invoked when the netcode needs to know if it should include the transform when spawning the object, if
@@ -84,7 +90,7 @@ public sealed class NetworkObject : MonoBehaviour
     ///     will wait until they are fully connected and have joined the game.
     /// </summary>
     [Range(byte.MinValue, byte.MaxValue)]
-    public int m_SnapshotGroup = 100;
+    public byte m_SnapshotGroup = 100;
 
     // KEEPSAKE FIX - make public
     public readonly HashSet<ulong> Observers = new();
@@ -92,6 +98,15 @@ public sealed class NetworkObject : MonoBehaviour
     [HideInInspector]
     [SerializeField]
     public uint GlobalObjectIdHash;
+
+    [HideInInspector]
+    [SerializeField]
+    // KEEPSAKE FIX - to debug what input the hash is based on, could be stripped in builds or whatever
+    public string GlobalObjectIdHash_DebugInput;
+
+    public delegate uint HashingAlgorithmDelegate(string input);
+
+    public static HashingAlgorithmDelegate HashingAlgorithm => XXHash.Hash32;
 
     /// <summary>
     ///     The NetworkManager that owns this NetworkObject.
@@ -131,8 +146,12 @@ public sealed class NetworkObject : MonoBehaviour
     public ulong NetworkObjectId { get; internal set; }
     // END KEEPSAKE FIX
 
-    // KEEPSAKE FIX - some state to support attaching nested NetworkObjects of spawned NetworkObjects
-    internal ulong SpawnedParentNetworkObjectId { get; set; }
+    // KEEPSAKE FIX - internal check for destroy to prevent multiple calls to network despawn/parent destroy events
+    public bool IsBeingDestroyed { get; internal set; }
+    // END KEEPSAKE FIX
+
+    // KEEPSAKE FIX - some state to support spawning nested NetworkObjects
+    internal ulong RootNetworkObjectId { get; set; }
 
     /// <summary>
     ///     Gets the ClientId of the owner of this NetworkObject
@@ -288,7 +307,7 @@ public sealed class NetworkObject : MonoBehaviour
         // KEEPSAKE FIX - check IsAttached and not IsSpawned
         if (!IsAttached)
         {
-            throw new SpawnStateException("Object is not attached");
+            throw new SpawnStateException($"Cannot {nameof(GetObservers)} on NetworkObject {gameObject.Path(true)} because it is not spawned with the network layer. If {gameObject.name} was just instantiated, it is probably too early in its lifetime. Try doing this later, from e.g. NetworkSetup or SafeStart.");
         }
 
         return Observers.GetEnumerator();
@@ -304,7 +323,7 @@ public sealed class NetworkObject : MonoBehaviour
         // KEEPSAKE FIX - check IsAttached and not IsSpawned
         if (!IsAttached)
         {
-            throw new SpawnStateException("Object is not attached");
+            throw new SpawnStateException($"Cannot check {nameof(IsNetworkVisibleTo)} on NetworkObject {gameObject.Path(true)} because it is not spawned with the network layer. If {gameObject.name} was just instantiated, it is probably too early in its lifetime. Try doing this later, from e.g. NetworkSetup or SafeStart.");
         }
 
         return Observers.Contains(clientId);
@@ -330,7 +349,6 @@ public sealed class NetworkObject : MonoBehaviour
     /// <param name="clientId">The client to show the <see cref="NetworkObject" /> to</param>
     public void NetworkShow(ulong clientId)
     {
-        // KEEPSAKE NOTE: hiding and showing nested sub-objects not (yet?) supported, only truly spawned objects..
         if (!IsSpawned)
         {
             throw new SpawnStateException("Object is not spawned");
@@ -345,6 +363,25 @@ public sealed class NetworkObject : MonoBehaviour
         {
             throw new VisibilityChangeException("The object is already visible");
         }
+
+        // KEEPSAKE FIX - nesting, ensure parents are spawned on client first, otherwise an invalid spawn command (referring to a parent that is null) will be sent
+        foreach (var no in GetComponentsInParent<NetworkObject>(true))
+        {
+            // also comparing GameObjects to not cause infinite loop when encountering malformed networked prefabs with 2 NetworkObject components.. :scream:
+            if (no == this || no.gameObject == gameObject)
+            {
+                continue;
+            }
+
+            if (!no.Observers.Contains(clientId))
+            {
+                no.NetworkShow(clientId);
+            }
+
+            // other parents visited recursively above
+            break;
+        }
+        // END KEEPSAKE FIX
 
         SnapshotSpawn(clientId);
 
@@ -376,7 +413,7 @@ public sealed class NetworkObject : MonoBehaviour
             // KEEPSAKE FIX - check IsAttached and not IsSpawned
             if (!networkObjects[i].IsAttached)
             {
-                throw new SpawnStateException("Object is not attached");
+                throw new SpawnStateException($"Cannot {nameof(NetworkShow)} NetworkObject {networkObjects[i].gameObject.Path(true)} because it is not spawned with the network layer. If {networkObjects[i].gameObject.name} was just instantiated, it is probably too early in its lifetime. Try doing this later, from e.g. NetworkSetup or SafeStart.");
             }
 
             if (networkObjects[i].Observers.Contains(clientId))
@@ -478,12 +515,25 @@ public sealed class NetworkObject : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// KEEPSAKE FIX
+    /// This needs to be called when a NetworkObject is moved to a different scene, so that e.g. the visibility check can be recomputed.
+    /// </summary>
+    public void NotifyMovedToNewScene()
+    {
+        MovedToNewScene?.Invoke(this);
+    }
+
     private void OnDestroy()
     {
         if (NetworkManager != null && NetworkManager.IsListening && NetworkManager.IsServer == false && IsSpawned && (IsSceneObject == null || (IsSceneObject != null && IsSceneObject.Value != true)))
         {
             throw new NotServerException($"Destroy a spawned {nameof(NetworkObject)} ({gameObject}) on a non-host client is not valid. Call {nameof(Destroy)} or {nameof(Despawn)} on the server/host instead.");
         }
+
+        // KEEPSAKE FIX - Set to true because we are entering OnDespawn from OnDestroy
+        IsBeingDestroyed = true;
+        // END KEEPSAKE FIX
 
         if (NetworkManager != null && NetworkManager.SpawnManager != null)
         {
@@ -499,6 +549,9 @@ public sealed class NetworkObject : MonoBehaviour
     {
         var command = new SnapshotDespawnCommand();
         command.NetworkObjectId = NetworkObjectId;
+        // KEEPSAKE FIX - Pass along IsBeingDestroyed
+        command.IsBeingDestroyed = IsBeingDestroyed;
+        // END KEEPSAKE FIX
 
         return command;
     }
@@ -507,42 +560,37 @@ public sealed class NetworkObject : MonoBehaviour
     {
         var command = new SnapshotSpawnCommand();
         command.NetworkObjectId = NetworkObjectId;
+        command.RootNetworkObjectId = RootNetworkObjectId;
         command.OwnerClientId = OwnerClientId;
         command.IsPlayerObject = IsPlayerObject;
         command.IsSceneObject = IsSceneObject == null || IsSceneObject.Value;
 
-        var parent = NetworkManager.SpawnManager.GetSpawnParentId(this);
-        if (parent != null)
+        // KEEPSAKE FIX - renamed to clarify variable
+        var hasNetworkedParent = NetworkSpawnManager.TryGetSpawnParentId(this, out var parentNetworkObject);
+        if (hasNetworkedParent)
         {
-            command.ParentNetworkId = parent.Value;
+            command.ParentNetworkId = parentNetworkObject.NetworkObjectId;
 
             // KEEPSAKE FIX
-            command.WaitForParentIfMissing = NetworkManager.SpawnManager.AttachedObjects.ContainsKey(parent.Value) && !NetworkManager.SpawnManager.SpawnedObjects.ContainsKey(parent.Value);
+            command.WaitForParentIfMissing = parentNetworkObject.IsAttached && !parentNetworkObject.IsSpawned;
+
+            // KEEPSAKE FIX - encode position and rotation in parent space when spawning with parent so that client spawns in correct spot in relation to parent
+            var parentTransform = parentNetworkObject.transform;
+            command.ObjectPositionLocal = parentTransform.InverseTransformPoint(transform.position);
+            command.ObjectRotationLocal = Quaternion.Inverse(parentTransform.rotation) * transform.rotation;
         }
         else
         {
             // write own network id, when no parents. todo: optimize this.
             command.ParentNetworkId = command.NetworkObjectId;
             command.WaitForParentIfMissing = false; // KEEPSAKE FIX
+            command.ObjectPositionLocal = transform.position;
+            command.ObjectRotationLocal = transform.rotation;
         }
 
         command.GlobalObjectIdHash = HostCheckForGlobalObjectIdHashOverride();
         // todo: check if (IncludeTransformWhenSpawning == null || IncludeTransformWhenSpawning(clientId)) for any clientId
-        command.ObjectPosition = transform.position;
-        command.ObjectRotation = transform.rotation;
         command.ObjectScale = transform.localScale;
-
-        return command;
-    }
-
-    private SnapshotAttachCommand GetAttachCommand()
-    {
-        var command = new SnapshotAttachCommand();
-        command.NestedNetworkObjectId = NetworkObjectId;
-        command.SpawnedParentNetworkObjectId = SpawnedParentNetworkObjectId;
-
-        command.OwnerClientId = OwnerClientId;
-        command.GlobalObjectIdHash = HostCheckForGlobalObjectIdHashOverride();
 
         return command;
     }
@@ -550,35 +598,41 @@ public sealed class NetworkObject : MonoBehaviour
     private void SnapshotSpawn()
     {
         var command = GetSpawnCommand();
-        NetworkManager.SnapshotSystem.Spawn(command, this, null);
+        //Debug.Log($"PICKUPABLE SPAWN DEBUG -- {nameof(NetworkObject)}.{nameof(SnapshotSpawn)} for {gameObject.Path()} (NO #{command.NetworkObjectId}) create a spawn command with position {command.ObjectPositionLocal} in relation to {(command.ParentNetworkId == command.NetworkObjectId ? "WORLD (has no parent)" : $"parent NO #{command.ParentNetworkId}")}");
+        // KEEPSAKE FIX - only spawn for clients that this object passed visibility check for, other clients should get it spawned when it becomes visible to them, via NetworkShow
+        //                if not this will simply bypass visibility check and never update Observers, so that clients will receive an additional Spawn command when object actually becomes visible
+        var targetClientIds = ListPool<ulong>.Get();
+
+        foreach (var clientId in Observers)
+        {
+            if (clientId != NetworkManager.ServerClientId)
+            {
+                targetClientIds.Add(clientId);
+            }
+        }
+
+        if (targetClientIds.Count > 0)
+        {
+            // takes ownership of targetClientIds
+            NetworkManager.SnapshotSystem.Spawn(command, this, targetClientIds);
+        }
+        else
+        {
+            ListPool<ulong>.Release(targetClientIds);
+        }
     }
 
     private void SnapshotSpawn(ulong clientId)
     {
         var command = GetSpawnCommand();
-        var targetClientIds = new List<ulong>();
+
+        // KEEPSAKE FIX - use ListPool
+        var targetClientIds = ListPool<ulong>.Get();
         targetClientIds.Add(clientId);
 
+        // takes ownership of targetClientIds
         NetworkManager.SnapshotSystem.Spawn(command, this, targetClientIds);
     }
-
-    // KEEPSAKE FIX
-
-    private void SnapshotAttach()
-    {
-        var command = GetAttachCommand();
-        NetworkManager.SnapshotSystem.Attach(command, this, null);
-    }
-
-    private void SnapshotAttach(ulong clientId)
-    {
-        var command = GetAttachCommand();
-        var targetClientIds = new List<ulong>();
-        targetClientIds.Add(clientId);
-
-        NetworkManager.SnapshotSystem.Attach(command, this, targetClientIds);
-    }
-    // END KEEPSAKE FIX
 
     internal void SnapshotDespawn()
     {
@@ -589,8 +643,9 @@ public sealed class NetworkObject : MonoBehaviour
     internal void SnapshotDespawn(ulong clientId)
     {
         var command = GetDespawnCommand();
-        var targetClientIds = new List<ulong>();
+        var targetClientIds = ListPool<ulong>.Get();
         targetClientIds.Add(clientId);
+        // takes ownership of targetClientIds
         NetworkManager.SnapshotSystem.Despawn(command, this, targetClientIds);
     }
 
@@ -607,16 +662,22 @@ public sealed class NetworkObject : MonoBehaviour
             throw new NotServerException($"Only server can spawn {nameof(NetworkObject)}s");
         }
 
+        // KEEPSAKE FIX - nested NetworkObjects
+        if (IsNested)
+        {
+            throw new SpawnStateException($"Nested object {gameObject.Path(true)} shouldn't have Spawn called on it. It will get spawned as part of root object {RootNetworkObjectId}.");
+        }
+
         NetworkManager.SpawnManager.SpawnNetworkObjectLocally(this, NetworkManager.SpawnManager.GetNetworkObjectId(), false, playerObject, ownerClientId, destroyWithScene);
 
         SnapshotSpawn();
 
-        // KEEPSAKE FIX - attach nested NetworkObjects
+        // KEEPSAKE FIX - nested NetworkObjects
         foreach (var nested in GetComponentsInChildren<NetworkObject>(true))
         {
-            if (nested.IsNested && nested.SpawnedParentNetworkObjectId == NetworkObjectId)
+            if (nested.IsNested && nested.RootNetworkObjectId == NetworkObjectId)
             {
-                nested.SnapshotAttach();
+                nested.SnapshotSpawn();
             }
         }
     }
@@ -663,86 +724,17 @@ public sealed class NetworkObject : MonoBehaviour
         NetworkManager.SpawnManager.DespawnObject(this, destroy);
     }
 
-    // KEEPSAKE FIX - Add "Attach" and "Detach" as a way to hook up NetworkObjects already spawned across network (from LegacyNetwork)
-    public void Attach()
-    {
-        if (!NetworkManager.IsListening)
-        {
-            throw new NotListeningException($"{nameof(NetworkManager)} is not listening, start a server or host before attaching objects");
-        }
-
-        if (!NetworkManager.IsServer)
-        {
-            throw new NotServerException($"Only server can attach {nameof(NetworkObject)}s");
-        }
-
-        // TODO attaching with owner not yet implemented
-        NetworkManager.SpawnManager.AttachNetworkObjectLocally(this, NetworkManager.SpawnManager.GetNetworkObjectId(), null);
-    }
-
-    // KEEPSAKE FIX
-    // KEEPSAKE NOTE: DEPRECATED and should be remove when LegacyNetwork no longer attaching Netcode objects. Snapshot system handles this now
-    public void AttachWithId(ulong networkObjectId, FastBufferReader variableData)
-    {
-        // Clients invoke this! To patch up externally instantiated NetworkObjects (through LegacyNetwork)
-
-        if (!NetworkManager.IsClient || NetworkManager.IsHost)
-        {
-            throw new NotServerException($"Attaching {nameof(NetworkObject)}s with pre-allocated ID is only expected to be invoked on pure clients");
-        }
-
-        // DISABLED - We don't need to allocate properly with the SpawnManager since we're a client and won't allocate our own IDs anyway
-
-        /*List<ulong> idsToReturn = new();
-        ulong nextId = 0;
-        do
-        {
-            nextId = NetworkManager.SpawnManager.GetNetworkObjectId();
-            if (nextId < networkObjectId)
-            {
-                idsToReturn.Add(nextId);
-            }
-            else if (nextId == networkObjectId)
-            {
-                break;
-            }
-        } while (nextId < networkObjectId);
-
-        if (nextId > networkObjectId)
-        {
-            throw new SpawnStateException(
-                $"Cannot attach with ID {networkObjectId}, next available ID is {nextId}. Is {networkObjectId} already in use?");
-        }
-
-        // At this point nextId == networkObjectId
-
-        // return the IDs we needed to temp allocate to reach our desired one
-        foreach (var id in idsToReturn)
-        {
-            NetworkManager.SpawnManager.ReleasedNetworkObjectIds.Enqueue(new ReleasedNetworkId
-            {
-                NetworkId = id,
-                ReleaseTime = Time.unscaledTime,
-            });
-        }*/
-
-        SetNetworkVariableData(variableData);
-
-        // TODO attaching with owner not yet implemented
-        NetworkManager.SpawnManager.AttachNetworkObjectLocally(this, networkObjectId, null);
-    }
-
-    public void Detach()
-    {
-        throw new NotImplementedException();
-    }
-    // END KEEPSAKE FIX
-
     /// <summary>
     ///     Removes all ownership of an object from any client. Can only be called from server
     /// </summary>
     public void RemoveOwnership()
     {
+        // KEEPSAKE FIX - seen as null when shutting down
+        if (NetworkManager == null || NetworkManager.SpawnManager == null)
+        {
+            return;
+        }
+
         NetworkManager.SpawnManager.RemoveOwnership(this);
     }
 
@@ -752,6 +744,12 @@ public sealed class NetworkObject : MonoBehaviour
     /// <param name="newOwnerClientId">The new owner clientId</param>
     public void ChangeOwnership(ulong newOwnerClientId)
     {
+        // KEEPSAKE FIX - seen as null when shutting down
+        if (NetworkManager == null || NetworkManager.SpawnManager == null)
+        {
+            return;
+        }
+
         NetworkManager.SpawnManager.ChangeOwnership(this, newOwnerClientId);
     }
 
@@ -883,10 +881,11 @@ public sealed class NetworkObject : MonoBehaviour
 
     private void OnTransformParentChanged()
     {
-        if (!AutoObjectParentSync)
+        // KEEPSAKE FIX - still track parent even though we still sync ourselves, so that spawn commands etc can be correct
+        /*if (!AutoObjectParentSync)
         {
             return;
-        }
+        }*/
 
         if (transform.parent == m_CachedParent)
         {
@@ -895,23 +894,27 @@ public sealed class NetworkObject : MonoBehaviour
 
         if (NetworkManager == null || !NetworkManager.IsListening)
         {
-            transform.parent = m_CachedParent;
-            Debug.LogException(new NotListeningException($"{nameof(NetworkManager)} is not listening, start a server or host before reparenting"));
+            // KEEPSAKE FIX - track parent but don't enforce
+            //transform.parent = m_CachedParent;
+            //Debug.LogException(new NotListeningException($"{nameof(NetworkManager)} is not listening, start a server or host before reparenting"));
             return;
         }
 
         if (!NetworkManager.IsServer)
         {
-            transform.parent = m_CachedParent;
-            Debug.LogException(new NotServerException($"Only the server can reparent {nameof(NetworkObject)}s"));
+            // KEEPSAKE FIX - track parent but don't enforce
+            //transform.parent = m_CachedParent;
+            //Debug.LogException(new NotServerException($"Only the server can reparent {nameof(NetworkObject)}s"));
             return;
         }
 
         // KEEPSAKE FIX - check IsAttached and not IsSpawned
         if (!IsAttached)
         {
-            transform.parent = m_CachedParent;
-            Debug.LogException(new SpawnStateException($"{nameof(NetworkObject)} can only be reparented after being attached"));
+            // KEEPSAKE FIX - track parent but don't enforce
+            //transform.parent = m_CachedParent;
+            //Debug.LogException(new SpawnStateException($"{nameof(NetworkObject)} can only be reparented after being attached"));
+            LogNetcode.Error($"Cannot reparent NetworkObject {gameObject.Path(true)} because it is not spawned with the network layer. If {gameObject.name} was just instantiated, it is probably too early in its lifetime. Try doing this later, from e.g. NetworkSetup or SafeStart.");
             return;
         }
 
@@ -921,16 +924,20 @@ public sealed class NetworkObject : MonoBehaviour
             var parentObject = transform.parent.GetComponent<NetworkObject>();
             if (parentObject == null)
             {
-                transform.parent = m_CachedParent;
-                Debug.LogException(new InvalidParentException($"Invalid parenting, {nameof(NetworkObject)} moved under a non-{nameof(NetworkObject)} parent"));
+                // KEEPSAKE FIX - track parent but don't enforce
+                //transform.parent = m_CachedParent;
+                //Debug.LogException(new InvalidParentException($"Invalid parenting, {nameof(NetworkObject)} moved under a non-{nameof(NetworkObject)} parent"));
+                LogNetcode.Error($"Cannot reparent NetworkObject {gameObject.Path(true)} to {transform.parent.gameObject.Path(true)} because {transform.parent.gameObject.name} is not a network object.");
                 return;
             }
 
             // KEEPSAKE FIX - check IsAttached and not IsSpawned
             if (!parentObject.IsAttached)
             {
-                transform.parent = m_CachedParent;
-                Debug.LogException(new SpawnStateException($"{nameof(NetworkObject)} can only be reparented under another attached {nameof(NetworkObject)}"));
+                // KEEPSAKE FIX - track parent but don't enforce
+                //transform.parent = m_CachedParent;
+                //Debug.LogException(new SpawnStateException($"{nameof(NetworkObject)} can only be reparented under another attached {nameof(NetworkObject)}"));
+                LogNetcode.Error($"Cannot reparent NetworkObject {gameObject.Path(true)} to {parentObject.gameObject.Path(true)} because the new parent {parentObject.gameObject.name} is not spawned with the network layer. If it was just instantiated, it is probably too early in its lifetime. Try doing this later, after the parent has run e.g. NetworkSetup or SafeStart.");
                 return;
             }
 
@@ -943,6 +950,14 @@ public sealed class NetworkObject : MonoBehaviour
 
         m_IsReparented = true;
         ApplyNetworkParenting();
+
+        // KEEPSAKE FIX - still track parent even though we still sync ourselves, so that spawn commands etc can be correct
+        //                .. now we've reached the sync part
+        if (!AutoObjectParentSync)
+        {
+            return;
+        }
+        // END KEEPSAKE FIX
 
         var message = new ParentSyncMessage
         {
@@ -969,12 +984,15 @@ public sealed class NetworkObject : MonoBehaviour
         }
     }
 
-    internal bool ApplyNetworkParenting()
+    // KEEPSAKE FIX - added isSpawning
+    internal bool ApplyNetworkParenting(bool isSpawning = false)
     {
+        // KEEPSAKE FIX - still track parent even though we still sync ourselves, so that spawn commands etc can be correct
+        /*
         if (!AutoObjectParentSync)
         {
             return false;
-        }
+        }*/
 
         // KEEPSAKE FIX - check IsAttached and not IsSpawned
         if (!IsAttached)
@@ -990,7 +1008,8 @@ public sealed class NetworkObject : MonoBehaviour
         if (m_LatestParent == null || !m_LatestParent.HasValue)
         {
             m_CachedParent = null;
-            transform.parent = null;
+            // KEEPSAKE FIX - track but don't enforce
+            //transform.parent = null;
 
             InvokeBehaviourOnNetworkObjectParentChanged(null);
             return true;
@@ -1013,7 +1032,19 @@ public sealed class NetworkObject : MonoBehaviour
         var parentObject = NetworkManager.SpawnManager.AttachedObjects[m_LatestParent.Value];
 
         m_CachedParent = parentObject.transform;
-        transform.parent = parentObject.transform;
+        // KEEPSAKE FIX - track but don't enforce, but verify
+        // transform.parent = parentObject.transform;
+        // KEEPSAKE FIX - *do* set if this is part of a spawn on a client, because in this case Netcode is correct and quicker than our usual means
+        if (NetworkManager.IsClient && isSpawning)
+        {
+            transform.parent = parentObject.transform;
+        }
+        if (parentObject.transform != transform.parent)
+        {
+            LogNetcode.Error($"Desync between Netcode tracked parent and actual parent of NO #{NetworkObjectId} {gameObject.Path(true)}. Netcode thinks it is {parentObject.gameObject.Path(true)}");
+            return false;
+        }
+        // END KEEPSAKE FIX
 
         InvokeBehaviourOnNetworkObjectParentChanged(parentObject);
         return true;
@@ -1127,7 +1158,8 @@ public sealed class NetworkObject : MonoBehaviour
         }
     }
 
-    internal void MarkVariablesDirty()
+    // KEEPSAKE FIX - per-client dirty flags
+    internal void MarkVariablesDirty(ulong clientId)
     {
         for (var i = 0; i < ChildNetworkBehaviours.Count; i++)
         {
@@ -1138,12 +1170,13 @@ public sealed class NetworkObject : MonoBehaviour
                 continue;
             }
 
-            behavior.MarkVariablesDirty();
+            behavior.MarkVariablesDirty(clientId);
         }
     }
 
     // KEEPSAKE FIX - made public
-    public void SetNetworkVariableData(FastBufferReader reader)
+    // KEEPSAKE FIX - added tickRead param since we now call this when handling Spawn commands and want proper tracking
+    public void SetNetworkVariableData(FastBufferReader reader, int? tickRead = null)
     {
         for (var i = 0; i < ChildNetworkBehaviours.Count; i++)
         {
@@ -1155,7 +1188,7 @@ public sealed class NetworkObject : MonoBehaviour
             }
 
             behaviour.InitializeVariables();
-            behaviour.SetNetworkVariableData(reader);
+            behaviour.SetNetworkVariableData(reader, tickRead);
         }
     }
 
@@ -1266,7 +1299,7 @@ public sealed class NetworkObject : MonoBehaviour
         if (IsNested)
         {
             obj.Header.IsNested = true;
-            obj.SpawnedParentObjectId = SpawnedParentNetworkObjectId;
+            obj.SpawnedParentObjectId = RootNetworkObjectId;
         }
 
         NetworkObject parentNetworkObject = null;
@@ -1287,8 +1320,9 @@ public sealed class NetworkObject : MonoBehaviour
             obj.Header.HasTransform = true;
             obj.Transform = new SceneObject.TransformData
             {
-                Position = transform.position,
-                Rotation = transform.rotation,
+                // KEEPSAKE FIX - if has parent, send in "parent space"
+                Position = parentNetworkObject != null ? transform.localPosition : transform.position,
+                Rotation = parentNetworkObject != null ? transform.localRotation : transform.rotation,
             };
         }
 
@@ -1315,18 +1349,17 @@ public sealed class NetworkObject : MonoBehaviour
     /// <param name="variableData">reader for the NetworkVariable data</param>
     /// <param name="networkManager">NetworkManager instance</param>
     /// <returns>optional to use NetworkObject deserialized</returns>
-    // KEEPSAKE FIX - make public
-    public static async UniTask<NetworkObject> AddSceneObjectAsync(SceneObject sceneObject, FastBufferReader variableData, NetworkManager networkManager)
+    internal static async UniTask<NetworkObject> AddSceneObjectAsync(SceneObject sceneObject, FastBufferReader variableData, NetworkManager networkManager)
     {
-        Vector3? position = null;
-        Quaternion? rotation = null;
+        Vector3? positionParentSpace = null;
+        Quaternion? rotationParentSpace = null;
         ulong? parentNetworkId = null;
         ulong? spawnedParentNetworkid = null; // KEEPSAKE FIX - nesting
 
         if (sceneObject.Header.HasTransform)
         {
-            position = sceneObject.Transform.Position;
-            rotation = sceneObject.Transform.Rotation;
+            positionParentSpace = sceneObject.Transform.Position;
+            rotationParentSpace = sceneObject.Transform.Rotation;
         }
 
         if (sceneObject.Header.HasParent)
@@ -1341,7 +1374,7 @@ public sealed class NetworkObject : MonoBehaviour
         }
 
         //Attempt to create a local NetworkObject
-        var networkObject = await networkManager.SpawnManager.CreateLocalNetworkObjectAsync(sceneObject.Header.IsSceneObject, sceneObject.Header.Hash, sceneObject.Header.OwnerClientId, parentNetworkId, spawnedParentNetworkid, sceneObject.Header.WaitForParentIfMissing, position, rotation, sceneObject.Header.IsReparented);
+        var networkObject = await networkManager.SpawnManager.CreateLocalNetworkObjectAsync(sceneObject.Header.IsSceneObject, sceneObject.Header.Hash, sceneObject.Header.OwnerClientId, parentNetworkId, spawnedParentNetworkid, sceneObject.Header.WaitForParentIfMissing, positionParentSpace, rotationParentSpace, sceneObject.Header.IsReparented);
 
         if (networkObject == null)
         {
@@ -1361,34 +1394,6 @@ public sealed class NetworkObject : MonoBehaviour
         }
 
         networkObject.SetNetworkParenting(sceneObject.Header.IsReparented, sceneObject.LatestParent);
-
-        // KEEPSAKE FIx - nesting
-        // for now nested objects aren't spawned but merely attached, we probably want them to be spawned in the future though
-        if (sceneObject.Header.IsNested && !sceneObject.Header.IsSceneObject)
-        {
-            if (sceneObject.Header.HasNetworkVariables)
-            {
-                variableData.ReadValueSafe(out int _);
-                networkObject.SetNetworkVariableData(variableData);
-
-                #if KEEPSAKE_BUILD_DEBUG || KEEPSAKE_BUILD_DEVELOPMENT
-                if (!variableData.TryBeginRead(sizeof(int) + NetworkObject.SceneObject.MarkerObjectEndVars.Length))
-                {
-                    throw new OverflowException($"Could not deserialize SceneObject {networkObject.NetworkObjectId} / {networkObject.GlobalObjectIdHash} end vars marker: Ran out of data (at byte {variableData.Position} of {variableData.Length}).");
-                }
-                variableData.ReadValue(out int markerLength);
-                Assert.AreEqual(SceneObject.MarkerObjectEndVars.Length, markerLength, $"NetworkObject {networkObject.NetworkObjectId} / {networkObject.GlobalObjectIdHash} end vars marker should be of expected length");
-                for (var i = 0; i < markerLength; ++i)
-                {
-                    variableData.ReadValue(out byte actualByte);
-                    Assert.AreEqual(SceneObject.MarkerObjectEndVars[i], actualByte, $"NetworkObject {networkObject.NetworkObjectId} / {networkObject.GlobalObjectIdHash} end vars marker should be intact (byte {i})");
-                }
-                #endif
-            }
-
-            networkManager.SpawnManager.AttachNetworkObjectLocally(networkObject, sceneObject.Header.NetworkObjectId, sceneObject.Header.OwnerClientId);
-            return networkObject;
-        }
 
         // Spawn the NetworkObject(
         networkManager.SpawnManager.SpawnNetworkObjectLocally(networkObject, sceneObject, variableData, false);
@@ -1648,8 +1653,14 @@ public sealed class NetworkObject : MonoBehaviour
     }
 
     // KEEPSAKE FIX - made public to call from our migration assistant
-    public void RegenerateGlobalObjectIdHash()
+    public void RegenerateGlobalObjectIdHash(bool force = false, bool isSaving = false)
     {
+        // KEEPSAKE FIX - lets not ever regenerate during play, been seeing OnValidate called on NetworkObjects in invalid scenes, which causes an error...
+        if (EditorApplication.isPlaying)
+        {
+            return;
+        }
+
         // do NOT regenerate GlobalObjectIdHash for NetworkPrefabs while Editor is in PlayMode
         if (EditorApplication.isPlaying && !string.IsNullOrEmpty(gameObject.scene.name))
         {
@@ -1662,8 +1673,8 @@ public sealed class NetworkObject : MonoBehaviour
             return;
         }
 
-        // KEEPSAKE FIX - do NOT regenerate when importing assets
-        if (EditorApplication.isUpdating)
+        // KEEPSAKE FIX - do NOT regenerate when importing assets, asset import worker is running in batch mode, so check that too
+        if (EditorApplication.isUpdating || Application.isBatchMode)
         {
             return;
         }
@@ -1689,14 +1700,49 @@ public sealed class NetworkObject : MonoBehaviour
         }
 
         var oldHash = GlobalObjectIdHash;
-        if (!TryGenerateGlobalIdHash(this, out var newHash))
+        if (!TryGenerateGlobalIdHash(this, out var newHash, out var newHashDebugInput))
         {
+            // When working with nested network objects in prefab stage it will fail to generate a proper ID until the instance has a valid file ID,
+            // which it seems to get when the root prefab gets saved (fair enough), so here we keep trying until prefab gets saved and a valid ID gets generated.
+            // If "Auto-Save" is disabled in the prefab stage editor the Save button will need to be clicked twice, first to save the prefab, second to save the now generated ID.
+            // If "Auto-Save" is enabled this happens automatically.
+            // Not terrible, not great.
+            var prefabStage = UnityEditor.SceneManagement.PrefabStageUtility.GetPrefabStage(gameObject);
+            if (prefabStage != null)
+            {
+                EditorApplication.delayCall += () =>
+                {
+                    if (this != null)
+                    {
+                        RegenerateGlobalObjectIdHash();
+                    }
+                };
+            }
+            else if (isSaving && SceneManager.GetSceneAt(0) == gameObject.scene && string.IsNullOrEmpty(gameObject.scene.path))
+            {
+                // If saving a spanking new scene we won't get an ID, and we can't get one until the scene has been saved once.
+                // If so we'll immediately dirty it and re-save it
+
+                void SaveSceneWithDelay()
+                {
+                    var scene = SceneManager.GetSceneAt(0);
+                    UnityEditor.SceneManagement.EditorSceneManager.SaveScene(scene);
+                }
+
+                EditorApplication.delayCall += () =>
+                {
+                    SaveSceneWithDelay(); // once with delay
+                    EditorApplication.delayCall += SaveSceneWithDelay; // once with twice the delay!
+                };
+            }
+
             return;
         }
 
-        if (newHash != oldHash)
+        if (newHash != oldHash || force)
         {
             GlobalObjectIdHash = newHash;
+            GlobalObjectIdHash_DebugInput = newHashDebugInput;
 
             // mark as dirty next Editor frame to avoid any current load scene operation to clear the dirty flag
             EditorApplication.delayCall += () =>
@@ -1711,7 +1757,7 @@ public sealed class NetworkObject : MonoBehaviour
         // END KEEPSAKE FIX
     }
 
-    public static bool TryGenerateGlobalIdHash(NetworkObject networkObject, out uint globalIdHash)
+    public static bool TryGenerateGlobalIdHash(NetworkObject networkObject, out uint globalIdHash, out string globalIdHashDebugInput)
     {
         GUID? assetGuid = null;
         bool? isRoot = null;
@@ -1724,6 +1770,7 @@ public sealed class NetworkObject : MonoBehaviour
             if (string.IsNullOrEmpty(assetPath))
             {
                 // this seems to happen while saving a prefab opened in prefab stage
+                globalIdHashDebugInput = default;
                 globalIdHash = default;
                 return false;
             }
@@ -1743,6 +1790,33 @@ public sealed class NetworkObject : MonoBehaviour
                 assetGuid = AssetDatabase.GUIDFromAssetPath(prefabStage.assetPath);
             }
         }
+        else if (UnityEditor.SceneManagement.EditorSceneManager.IsPreviewSceneObject(networkObject))
+        {
+            if (!networkObject.gameObject.scene.IsValid())
+            {
+                // this has been seen when OnValidate runs as part of a preview scene, probably when the preview scene is opening/loading
+                globalIdHashDebugInput = default;
+                globalIdHash = default;
+                return false;
+            }
+
+            isRoot = networkObject.gameObject.transform.parent == null;
+            if (isRoot == true)
+            {
+                // using PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot might be *wrong* when dealing with a prefab variant and seems to return
+                // the path of the base prefab, and not the prefab we currently are operating on.
+                // using the scene path seems to work..
+
+                assetGuid = AssetDatabase.GUIDFromAssetPath(networkObject.gameObject.scene.path);
+            }
+        }
+        else if (SceneManager.GetSceneAt(0) == networkObject.gameObject.scene && string.IsNullOrEmpty(networkObject.gameObject.scene.path))
+        {
+            // When working in an shiny new never-saved Scene we can't generate valid IDs, will be generated on save
+            globalIdHashDebugInput = default;
+            globalIdHash = default;
+            return false;
+        }
 
 
         if (isRoot == true)
@@ -1750,7 +1824,8 @@ public sealed class NetworkObject : MonoBehaviour
             var settings = AddressableAssetSettingsDefaultObject.Settings;
             var entry = settings.FindAssetEntry(assetGuid.ToString()) ?? settings.CreateOrMoveEntry(assetGuid.ToString(), settings.DefaultGroup);
             entry.SetLabel(AddressableLabel, true, true);
-            globalIdHash = XXHash.Hash32(entry.address);
+            globalIdHashDebugInput = entry.address;
+            globalIdHash = HashingAlgorithm(entry.address);
             return true;
         }
 
@@ -1763,12 +1838,23 @@ public sealed class NetworkObject : MonoBehaviour
             // but the File ID part of `globalId` will be the File ID of the *instance* in the *scene* and not of the nested prefab in the asset (which `this` refers to).
             // The result is that the *asset* on disk will get a new global id hash based on the instance in the scene, which is not good since we want these to be stable.
             // We just exit out here and assume a nice "type 2" (Scene Object) ID will come along at some point.
+            globalIdHashDebugInput = default;
             globalIdHash = default;
             return false;
         }
 
         if (prefabStage != null)
         {
+            if (globalId.targetObjectId == 0)
+            {
+                // If we're in a prefab stage (but not root which has already been handled above) we expect to have a local file ID, otherwise
+                // our generated ID will be identical to our asset (since what will be hashed is [Asset GUID]-0-0, basically).
+                // This might happen when duplicating a nested object in a prefab stage, before the prefab has been saved.
+                globalIdHashDebugInput = default;
+                globalIdHash = default;
+                return false;
+            }
+
             assetGuid = AssetDatabase.GUIDFromAssetPath(prefabStage.assetPath);
             if (!GlobalObjectId.TryParse(
                     globalId.ToString().Replace("00000000000000000000000000000000", assetGuid.ToString()),
@@ -1784,7 +1870,8 @@ public sealed class NetworkObject : MonoBehaviour
                 $"Couldn't construct valid {nameof(GlobalObjectId)} for {networkObject.gameObject.Path(true)}. Maybe this is an edge case we must implement support for.");
         }
 
-        globalIdHash = XXHash.Hash32(globalId.ToString());
+        globalIdHashDebugInput = globalId.ToString();
+        globalIdHash = HashingAlgorithm(globalId.ToString());
         return true;
     }
     #endif

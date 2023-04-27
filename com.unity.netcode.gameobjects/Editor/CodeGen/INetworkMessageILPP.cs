@@ -26,13 +26,15 @@ namespace Unity.Netcode.Editor.CodeGen
 
         public override ILPostProcessResult Process(ICompiledAssembly compiledAssembly)
         {
+            m_Diagnostics.Clear();
+
             if (!WillProcess(compiledAssembly))
             {
                 return null;
             }
 
 
-            m_Diagnostics.Clear();
+            //m_Diagnostics.AddWarning($"Hello there from ILPP of {compiledAssembly.Name}");
 
             // read
             var assemblyDefinition = CodeGenHelpers.AssemblyDefinitionFor(compiledAssembly, out var resolver);
@@ -44,6 +46,7 @@ namespace Unity.Netcode.Editor.CodeGen
 
             // process
             var mainModule = assemblyDefinition.MainModule;
+            //m_Diagnostics.AddWarning($"[ILPP {compiledAssembly.Name}] main module: {mainModule?.ToString() ?? "NULL"}");
             if (mainModule != null)
             {
                 if (ImportReferences(mainModule))
@@ -51,6 +54,7 @@ namespace Unity.Netcode.Editor.CodeGen
                     var types = mainModule.GetTypes()
                         .Where(t => t.Resolve().HasInterface(CodeGenHelpers.INetworkMessage_FullName) && !t.Resolve().IsAbstract)
                         .ToList();
+                    //m_Diagnostics.AddWarning($"[ILPP {compiledAssembly.Name}] types found: {types.Count} -- {string.Join(", ", types.Select(t => t.Name))}");
                     // process `INetworkMessage` types
                     if (types.Count == 0)
                     {
@@ -103,6 +107,8 @@ namespace Unity.Netcode.Editor.CodeGen
         private FieldReference m_MessagingSystem_MessageWithHandler_MessageType_FieldRef;
         private FieldReference m_MessagingSystem_MessageWithHandler_Handler_FieldRef;
         private MethodReference m_Type_GetTypeFromHandle_MethodRef;
+        // KEEPSAKE FIX
+        private MethodReference m_Debug_Log_MethodRef;
 
         private MethodReference m_List_Add_MethodRef;
 
@@ -174,6 +180,25 @@ namespace Unity.Netcode.Editor.CodeGen
                 }
             }
 
+            // KEEPSAKE FIX
+            var debugType = typeof(UnityEngine.Debug);
+            foreach (var methodInfo in debugType.GetMethods(BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public))
+            {
+                switch (methodInfo.Name)
+                {
+                    case nameof(UnityEngine.Debug.Log):
+                    {
+                        if (methodInfo.GetParameters().Length == 1) // don't map to (object, UnityEngine.Object) overload
+                        {
+                            m_Debug_Log_MethodRef = moduleDefinition.ImportReference(methodInfo);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            //m_Diagnostics.AddWarning($"m_Debug_Log_MethodRef mapped to {m_Debug_Log_MethodRef.FullName}");
+
 
             return true;
         }
@@ -190,6 +215,7 @@ namespace Unity.Netcode.Editor.CodeGen
                     MethodAttributes.RTSpecialName |
                     MethodAttributes.Static,
                     typeDefinition.Module.TypeSystem.Void);
+
                 staticCtorMethodDef.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
                 typeDefinition.Methods.Add(staticCtorMethodDef);
             }
@@ -249,6 +275,8 @@ namespace Unity.Netcode.Editor.CodeGen
                         var receiveMethod = new GenericInstanceMethod(m_MessagingSystem_ReceiveMessage_MethodRef);
                         receiveMethod.GenericArguments.Add(type);
                         CreateInstructionsToRegisterType(processor, instructions, type, receiveMethod);
+
+                        //m_Diagnostics.AddWarning($"[ILPP {assembly.Name}] create instructions for type {type.FullName}. Receive: {receiveMethod.FullName}");
                     }
 
                     instructions.ForEach(instruction => processor.Body.Instructions.Insert(processor.Body.Instructions.Count - 1, instruction));

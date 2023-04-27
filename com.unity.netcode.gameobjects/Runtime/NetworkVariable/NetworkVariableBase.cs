@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
 using UniRx;
+using UniRx.Observers;
+using Unity.Collections;
 
 namespace Unity.Netcode
 {
@@ -16,13 +19,22 @@ namespace Unity.Netcode
         // KEEPSAKE FIX made protected internal so we can access it within Netcode
         protected internal NetworkBehaviour m_NetworkBehaviour;
 
+        // KEEPSAKE FIX in some cases the network variable can insist on its own snapshot group, eg if a NO with group 90 has
+        //              a NetworkObjectReference var that gets assigned a NO with group 100 we don't want to send that update until group 100
+        public byte? SnapshotGroup { get; set; }
+
         // KEEPSAKE FIX we want to know if net var is fully setup or not before certain validations kick in
         public bool IsInitialized { get; private set; }
 
-        public void Initialize(NetworkBehaviour networkBehaviour)
+        public IDisposable StartInitialize(NetworkBehaviour networkBehaviour)
         {
             m_NetworkBehaviour = networkBehaviour;
-            IsInitialized = true;
+
+            return Disposable.Create(
+                () =>
+                {
+                    IsInitialized = true;
+                });
         }
 
         protected NetworkVariableBase(NetworkVariableReadPermission readPermIn = NetworkVariableReadPermission.Everyone)
@@ -30,7 +42,12 @@ namespace Unity.Netcode
             ReadPerm = readPermIn;
         }
 
-        private protected bool m_IsDirty;
+        // KEEPSAKE FIX - replaced with per-client IsDirty
+        //private protected bool m_IsDirty;
+
+        // KEEPSAKE FIX - per-client dirty flags
+        private HashSet<ulong> m_IsDirtyForClient = new();
+        private HashSet<ulong> m_IsDirtyForClientDouble = new();
 
         internal int TickRead = 0;
 
@@ -65,11 +82,12 @@ namespace Unity.Netcode
         public int MinNextTickWrite;
 
         // KEEPSAKE FIX - observable IsDirty so that NetworkBehaviour doesn't have to poll
-        public IObservable<bool> WhenDirty => m_IsDirtySubject.DistinctUntilChanged();
+        public IObservable<(bool, ulong)> WhenDirtyForClient => m_DirtyForClientSubject;
 
-        protected readonly BehaviorSubject<bool> m_IsDirtySubject = new(false); // BehaviorSubject so that DistinctUntilChanged gets primed with current value
+        protected readonly Subject<(bool, ulong)> m_DirtyForClientSubject = new Subject<(bool, ulong)>();
         // END KEEPSAKE FIX
 
+        /* KEEPSAKE FIX - replaced with per-client IsDirty
         /// <summary>
         /// Sets whether or not the variable needs to be delta synced
         /// </summary>
@@ -79,19 +97,77 @@ namespace Unity.Netcode
 
             // KEEPSAKE FIX - observable IsDirty (important to use IsDirty(), not m_IsDirty, to respect subclass impl)
             m_IsDirtySubject.OnNext(IsDirty());
+        }*/
+
+        /// <summary>
+        /// KEEPSAKE FIX - added per-client dirty flag
+        /// </summary>
+        public void SetDirty(bool isDirty, ulong clientId)
+        {
+            if (isDirty)
+            {
+                if (m_IsDirtyForClient.Add(clientId))
+                {
+                    m_DirtyForClientSubject.OnNext((true, clientId));
+                }
+            }
+            else
+            {
+                if (m_IsDirtyForClient.Remove(clientId))
+                {
+                    m_DirtyForClientSubject.OnNext((false, clientId));
+                }
+            }
+        }
+
+        public void SetDirtyForAll(bool isDirty)
+        {
+            if (!m_NetworkBehaviour.NetworkManager.IsServer)
+            {
+                SetDirty(isDirty, m_NetworkBehaviour.NetworkManager.ServerClientId);
+            }
+            else
+            {
+                foreach (var clientId in m_NetworkBehaviour.NetworkManager.ConnectedClientsIds)
+                {
+                    if (clientId != m_NetworkBehaviour.NetworkManager.ServerClientId)
+                    {
+                        SetDirty(isDirty, clientId);
+                    }
+                }
+            }
         }
 
         /// <summary>
         /// Resets the dirty state and marks the variable as synced / clean
         /// </summary>
-        public virtual void ResetDirty()
+        public virtual void ResetDirty(ulong? clientId)
         {
-            m_IsDirty = false;
+            // KEEPSAKE FIX - per client dirty flag
+            if (clientId.HasValue)
+            {
+                if (m_IsDirtyForClient.Remove(clientId.Value))
+                {
+                    // important to use IsDirty(), not m_IsDirty, to respect subclass impl
+                    m_DirtyForClientSubject.OnNext((IsDirty(clientId.Value), clientId.Value));
+                }
+            }
+            else
+            {
+                (m_IsDirtyForClient, m_IsDirtyForClientDouble) = (m_IsDirtyForClientDouble, m_IsDirtyForClient);
+                m_IsDirtyForClient.Clear();
 
-            // KEEPSAKE FIX - observable IsDirty (important to use IsDirty(), not m_IsDirty, to respect subclass impl)
-            m_IsDirtySubject.OnNext(IsDirty());
+                foreach (var c in m_IsDirtyForClientDouble)
+                {
+                    // important to use IsDirty(), not m_IsDirty, to respect subclass impl
+                    m_DirtyForClientSubject.OnNext((IsDirty(c), c));
+                }
+
+                m_IsDirtyForClientDouble.Clear();
+            };
         }
 
+        /* KEEPSAKE FIX - replaced with per-client IsDirty
         /// <summary>
         /// Gets Whether or not the container is dirty
         /// </summary>
@@ -99,11 +175,34 @@ namespace Unity.Netcode
         public virtual bool IsDirty()
         {
             return m_IsDirty;
+        }*/
+
+        /// <summary>
+        /// KEEPSAKE FIX - added per-client dirty flags
+        /// </summary>
+        public virtual bool IsDirty(ulong? clientId)
+        {
+            if (clientId.HasValue)
+            {
+                return m_IsDirtyForClient.Contains(clientId.Value);
+            }
+
+            return m_IsDirtyForClient.Count > 0;
+        }
+
+        protected bool IsBaseDirty()
+        {
+            return m_IsDirtyForClient.Count > 0;
+        }
+
+        public IEnumerable<ulong> DirtyForClients()
+        {
+            return m_IsDirtyForClient;
         }
 
         public virtual bool ShouldWrite(ulong clientId, bool isServer)
         {
-            return IsDirty() && isServer && CanClientRead(clientId);
+            return IsDirty(clientId) && isServer && CanClientRead(clientId);
         }
 
         /// <summary>
@@ -123,11 +222,25 @@ namespace Unity.Netcode
             return true;
         }
 
+
+        // KEEPSAKE FIX - we added net var-level snapshot group, see comment on SnapshotGroup field above
+        public bool IsClientInSnapshotGroup(ulong clientId)
+        {
+            if (!SnapshotGroup.HasValue)
+            {
+                return true;
+            }
+
+            var clientGroup = m_NetworkBehaviour.NetworkManager.SnapshotSystem.GetCurrentSnapshotGroup(clientId);
+            return clientGroup >= SnapshotGroup.Value;
+        }
+
         /// <summary>
         /// Writes the dirty changes, that is, the changes since the variable was last dirty, to the writer
         /// </summary>
         /// <param name="writer">The stream to write the dirty changes to</param>
-        public abstract void WriteDelta(FastBufferWriter writer);
+        /// <param name="clientId">KEEPSAKE FIX - since we added per-client dirty, support for writing different deltas to clients</param>
+        public abstract void WriteDelta(FastBufferWriter writer, ulong clientId);
 
         /// <summary>
         /// Writes the complete state of the variable to the writer

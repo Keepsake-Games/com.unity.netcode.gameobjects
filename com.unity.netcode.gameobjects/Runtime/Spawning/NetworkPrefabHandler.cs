@@ -21,10 +21,11 @@ namespace Unity.Netcode
         /// via the  <see cref="GameObject.SetActive(bool)"/> method.
         /// </summary>
         /// <param name="ownerClientId">the owner for the <see cref="NetworkObject"/> to be instantiated</param>
-        /// <param name="position">the initial/default position for the <see cref="NetworkObject"/> to be instantiated</param>
-        /// <param name="rotation">the initial/default rotation for the <see cref="NetworkObject"/> to be instantiated</param>
+        /// <param name="position">the initial/default position for the <see cref="NetworkObject"/> to be instantiated. World space.</param>
+        /// <param name="rotation">the initial/default rotation for the <see cref="NetworkObject"/> to be instantiated. World space.</param>
+        /// <param name="parentNetworkObject">KEEPSAKE FIX</param>
         /// <returns></returns>
-        NetworkObject Instantiate(ulong ownerClientId, Vector3 position, Quaternion rotation);
+        NetworkObject Instantiate(ulong ownerClientId, Vector3 position, Quaternion rotation, NetworkObject parentNetworkObject);
 
         /// <summary>
         /// Invoked on Client and Server
@@ -252,16 +253,17 @@ namespace Unity.Netcode
         /// </summary>
         /// <param name="networkPrefabAssetHash">typically the "server-side" asset's prefab hash</param>
         /// <param name="ownerClientId"></param>
-        /// <param name="position"></param>
-        /// <param name="rotation"></param>
+        /// <param name="positionWorldSpace"></param>
+        /// <param name="rotationWorldSpace"></param>
+        /// <param name="parentNetworkObject">KEEPSAKE FIX</param>
         /// <returns></returns>
-        internal NetworkObject HandleNetworkPrefabSpawn(uint networkPrefabAssetHash, ulong ownerClientId, Vector3 position, Quaternion rotation)
+        internal NetworkObject HandleNetworkPrefabSpawn(uint networkPrefabAssetHash, ulong ownerClientId, Vector3 positionWorldSpace, Quaternion rotationWorldSpace, NetworkObject parentNetworkObject)
         {
             // KEEPSAKE FIX - search only one using TryGetValue
             if (m_PrefabAssetToPrefabHandler.TryGetValue(networkPrefabAssetHash, out var handler))
             //if (m_PrefabAssetToPrefabHandler.ContainsKey(networkPrefabAssetHash))
             {
-                var networkObjectInstance = handler.Instantiate(ownerClientId, position, rotation);
+                var networkObjectInstance = handler.Instantiate(ownerClientId, positionWorldSpace, rotationWorldSpace, parentNetworkObject);
 
                 //Now we must make sure this alternate PrefabAsset spawned in place of the prefab asset with the networkPrefabAssetHash (GlobalObjectIdHash)
                 //is registered and linked to the networkPrefabAssetHash so during the HandleNetworkPrefabDestroy process we can identify the alternate prefab asset.

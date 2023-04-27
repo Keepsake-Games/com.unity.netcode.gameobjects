@@ -1,6 +1,8 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEditor;
+using UnityEditor.SceneManagement;
+using UnityEngine.SceneManagement;
 
 namespace Unity.Netcode.Editor
 {
@@ -14,6 +16,24 @@ namespace Unity.Netcode.Editor
 
         // KEEPSAKE FIX
         private string m_PendingNewOwnerStr;
+
+        [InitializeOnLoadMethod]
+        private static void InitializeSceneSaveHook()
+        {
+            EditorSceneManager.sceneSaving -= SceneSavingCallback;
+            EditorSceneManager.sceneSaving += SceneSavingCallback;
+        }
+
+        private static void SceneSavingCallback(Scene scene, string path)
+        {
+            foreach (var root in scene.GetRootGameObjects())
+            {
+                foreach (var no in root.GetComponentsInChildren<NetworkObject>(true))
+                {
+                    no.RegenerateGlobalObjectIdHash(false, true);
+                }
+            }
+        }
 
         private void Initialize()
         {

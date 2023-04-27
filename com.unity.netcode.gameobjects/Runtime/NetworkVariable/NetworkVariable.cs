@@ -138,20 +138,18 @@ namespace Unity.Netcode
 
         private protected void Set(T value)
         {
-            m_IsDirty = true;
+            // KEEPSAKE FIX - per-client dirty
+            //m_IsDirty = true;
+
             T previousValue = m_InternalValue;
             m_InternalValue = value;
             OnValueChanged?.Invoke(previousValue, m_InternalValue);
 
-            // KEEPSAKE FIX - observable IsDirty (important to use IsDirty(), not m_IsDirty, to respect subclass impl)
-            m_IsDirtySubject.OnNext(IsDirty());
+            SetDirtyForAll(true);
         }
 
-        /// <summary>
-        /// Writes the variable to the writer
-        /// </summary>
-        /// <param name="writer">The stream to write the value to</param>
-        public override void WriteDelta(FastBufferWriter writer)
+        /// <inheritdoc />
+        public override void WriteDelta(FastBufferWriter writer, ulong clientId)
         {
             WriteField(writer);
         }
@@ -169,10 +167,7 @@ namespace Unity.Netcode
 
             if (keepDirtyDelta)
             {
-                m_IsDirty = true;
-
-                // KEEPSAKE FIX - observable IsDirty (important to use IsDirty(), not m_IsDirty, to respect subclass impl)
-                m_IsDirtySubject.OnNext(IsDirty());
+                SetDirtyForAll(true);
             }
 
             OnValueChanged?.Invoke(previousValue, m_InternalValue);

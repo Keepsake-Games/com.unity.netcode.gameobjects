@@ -1,5 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Threading;
+using Cysharp.Threading.Tasks;
 using Keepsake.Common;
 using UnityEngine;
 
@@ -141,6 +143,13 @@ public struct NetworkObjectReference : INetworkSerializable, IEquatable<NetworkO
         }
 
         networkManager = networkManager != null ? networkManager : NetworkManager.Singleton;
+
+        // KEEPSAKE FIX - seen when anyone tries to resolve from OnDestroy triggered by shutdown
+        if (networkManager == null)
+        {
+            return null;
+        }
+
         // KEEPSAKE FIX - find objects in Attached instead of Spawned collection
         networkManager.SpawnManager.AttachedObjects.TryGetValue(networkObjectRef.m_NetworkObjectId, out var networkObject);
 
@@ -190,6 +199,21 @@ public struct NetworkObjectReference : INetworkSerializable, IEquatable<NetworkO
     {
         return new NetworkObjectReference(gameObject);
     }
+
+    /// <summary>
+    /// KEEPSAKE FIX
+    /// Resolves the NetworkObjectReference to a GameObject, potentially waiting for it to exist.
+    /// </summary>
+    public async UniTask<GameObject> GetAsync(CancellationToken cancellationToken = default)
+    {
+        var @this = this;
+        if (!@this.TryGet(out var resolved))
+        {
+            await UniTask.WaitWhile(() => @this.TryGet(out resolved) == false, cancellationToken: cancellationToken);
+        }
+        return resolved == null ? null : resolved.gameObject;
+    }
+    // END KEEPSAKE FIX
 }
 
 }
